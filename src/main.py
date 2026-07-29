@@ -10,7 +10,7 @@ import time
 from .cache import Cache
 from .config import ConfigError, load_config
 from .lastfm import LastfmClient, canonicalize_tag_name, load_aliases, save_aliases
-from .scanner import run_once, wipe_all_genre_tags
+from .scanner import run_once, scan_artist, wipe_all_genre_tags
 
 log = logging.getLogger(__name__)
 
@@ -80,6 +80,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="genre_tagger: проставляет жанры Last.fm в ID3-теги")
     parser.add_argument("--once", action="store_true", help="Один проход и выход (без цикла)")
     parser.add_argument("--reset-artist", metavar="ARTIST", help="Удалить артиста из кэша и форсировать пересчёт/перезапись")
+    parser.add_argument(
+        "--tag-artist",
+        metavar="ARTIST",
+        help=(
+            "Обработать одного исполнителя прямо сейчас: сбросить его кэш и "
+            "сразу сходить в Last.fm/перезаписать ID3, без полного скана "
+            "остальной библиотеки. ARTIST должен точно совпадать с именем "
+            "папки в MUSIC_DIR. Эквивалент --reset-artist + --once, но "
+            "затрагивает только этого исполнителя."
+        ),
+    )
     parser.add_argument(
         "--add-alias",
         nargs=2,
@@ -198,6 +209,24 @@ def main() -> None:
         cache.reset(args.reset_artist)
         cache.set_force_rewrite(args.reset_artist)
         log.info("Reset cache entry for artist %r, forcing rewrite on next scan", args.reset_artist)
+        return
+
+    if args.tag_artist:
+        artist_path = os.path.join(config.music_dir, args.tag_artist)
+        if not os.path.isdir(artist_path):
+            log.error("No such artist directory: %s", artist_path)
+            sys.exit(1)
+        cache.reset(args.tag_artist)
+        cache.set_force_rewrite(args.tag_artist)
+        scan_artist(
+            args.tag_artist,
+            config.music_dir,
+            cache,
+            lastfm,
+            force_scan=True,
+            genre_ttl_days=config.genre_ttl_days,
+        )
+        log.info("Finished tagging artist %r", args.tag_artist)
         return
 
     combined_config_hash = f"{config.config_hash}:{_aliases_fingerprint(aliases)}"
