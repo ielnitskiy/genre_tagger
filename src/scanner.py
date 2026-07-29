@@ -205,10 +205,19 @@ def run_once(
     cache: Cache,
     lastfm: LastfmClient,
     force_scan: bool = False,
+    limit: Optional[int] = None,
 ) -> None:
     artist_names = _list_artist_dirs(config.music_dir, config.skip_dirs)
-    log.info("Starting scan pass over %d artist dir(s)", len(artist_names))
-    for artist_name in artist_names:
+    # limit режет только то, что реально обрабатываем в этом проходе;
+    # orphaned-проверка ниже должна видеть полный artist_names, иначе
+    # артисты за пределами limit ошибочно попадут в "нет папки на диске".
+    scan_names = artist_names[:limit] if limit is not None else artist_names
+    log.info(
+        "Starting scan pass over %d artist dir(s)%s",
+        len(scan_names),
+        f" (limited to first {limit} of {len(artist_names)})" if limit is not None else "",
+    )
+    for artist_name in scan_names:
         try:
             scan_artist(
                 artist_name,

@@ -121,6 +121,19 @@ def main() -> None:
         help="Подтверждение для --wipe-all-genres (без него это dry-run)",
     )
     parser.add_argument(
+        "--limit",
+        type=int,
+        metavar="N",
+        help=(
+            "Обработать только первые N исполнителей (по алфавиту) за этот "
+            "проход вместо всей библиотеки — удобно для пробного запуска "
+            "перед полным включением. Работает вместе с --once/--force-scan. "
+            "Уже обработанные ранее исполнители по-прежнему пропускаются по "
+            "mtime-gate, так что N считается по каталогам, а не по реально "
+            "затронутым артистам."
+        ),
+    )
+    parser.add_argument(
         "--force-scan",
         action="store_true",
         help=(
@@ -131,6 +144,10 @@ def main() -> None:
         ),
     )
     args = parser.parse_args()
+
+    if args.limit is not None and args.limit <= 0:
+        log.error("--limit must be a positive integer, got %d", args.limit)
+        sys.exit(1)
 
     try:
         config = load_config()
@@ -233,12 +250,12 @@ def main() -> None:
     _rewrite_on_config_change(cache, lastfm, combined_config_hash)
 
     if args.once:
-        run_once(config, cache, lastfm, force_scan=args.force_scan)
+        run_once(config, cache, lastfm, force_scan=args.force_scan, limit=args.limit)
         return
 
     stop = _install_shutdown_handler()
     while not stop["requested"]:
-        run_once(config, cache, lastfm, force_scan=args.force_scan)
+        run_once(config, cache, lastfm, force_scan=args.force_scan, limit=args.limit)
         if stop["requested"]:
             break
         _sleep_interruptibly(config.scan_interval_seconds, stop)
