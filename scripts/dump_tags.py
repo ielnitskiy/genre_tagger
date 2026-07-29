@@ -123,7 +123,16 @@ def main() -> None:
         "--min-count",
         type=int,
         default=1,
-        help="Не показывать теги с суммарным count по всей библиотеке меньше этого значения (влияет только на секцию сырых тегов и кластеры)",
+        help="Не показывать теги с суммарным count по всей библиотеке меньше этого значения (влияет только на секцию сырых тегов, кластеризацию не фильтрует)",
+    )
+    parser.add_argument(
+        "--no-clusters",
+        action="store_true",
+        help=(
+            "Не показывать секцию кандидатов на объединение (похожее написание) — "
+            "она не связана с бан-листом/--ban-below и обычно не нужна, когда вы "
+            "разбираете именно мусорные жанры, а не дубли написания."
+        ),
     )
     parser.add_argument(
         "--max-tracks",
@@ -227,20 +236,45 @@ def main() -> None:
         else:
             print(f"\nНи один жанр не попадает под порог <= {args.ban_below} треков, бан-лист не менялся.")
 
-    totals = {tag: count for tag, count in totals.items() if count >= args.min_count}
-    if totals:
-        print(f"\n=== {len(totals)} уникальных канонических тегов Last.fm (сырой вес, все теги) ===\n")
-        for tag, count in sorted(totals.items()):
+    totals_display = {tag: count for tag, count in totals.items() if count >= args.min_count}
+    if totals_display:
+        print(f"\n=== {len(totals_display)} уникальных канонических тегов Last.fm (сырой вес, все теги) ===\n")
+        for tag, count in sorted(totals_display.items()):
             print(f"{count:>8}  {tag}")
 
-        clusters = [c for c in find_similar_clusters(list(totals.keys()), args.cutoff) if len(c) > 1]
+    if not args.no_clusters:
+        # Ищем похожие по написанию среди ВСЕХ когда-либо встречавшихся тегов
+        # (не только прошедших --min-count) — иначе потеряем ровно тот случай,
+        # ради которого нужны алиасы: редкая опечатка (мало треков) похожа по
+        # буквам на популярный правильный жанр (много треков), и без него пары
+        # не найти. Секция не связана с бан-листом — см. --no-clusters, если
+        # она не нужна (например, когда разбираете именно --ban-below).
+        cluster_pool = list(totals.keys())
+        clusters = [c for c in find_similar_clusters(cluster_pool, args.cutoff) if len(c) > 1]
+        if args.max_tracks is not None:
+            # --max-tracks здесь фильтрует уже готовые кластеры, а не входной
+            # пул: оставляем только те, где хотя бы один участник реально
+            # нуждается в разборе (<= N треков) — например опечатку, у которой
+            # всего 2 трека, даже если она стоит в кластере рядом с популярным
+            # жанром на 900+.
+            clusters = [
+                c for c in clusters if any(track_counts.get(tag, 0) <= args.max_tracks for tag in c)
+            ]
         if clusters:
-            print(f"\n=== {len(clusters)} кандидат(ов) на объединение (похожее написание, cutoff={args.cutoff}) ===\n")
+            print(
+                f"\n=== {len(clusters)} кандидат(ов) на объединение (похожее написание, "
+                f"cutoff={args.cutoff}); число в скобках — сколько треков реально "
+                "стоит этим жанром сейчас ===\n"
+            )
             for cluster in clusters:
-                names = ", ".join(f"{tag!r} ({totals[tag]})" for tag in cluster)
+                names = ", ".join(f"{tag!r} ({track_counts.get(tag, 0)})" for tag in cluster)
                 print(f"  - {names}")
-        else:
-            print("\nПохожих по написанию тегов не найдено.")
+        elif cluster_pool:
+            print(
+                "\nПохожих по написанию тегов не найдено"
+                + (f" (с учётом --max-tracks {args.max_tracks})" if args.max_tracks is not None else "")
+                + "."
+            )
 
 
 if __name__ == "__main__":

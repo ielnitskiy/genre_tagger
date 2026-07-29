@@ -230,6 +230,107 @@ def test_main_suggest_bans_file_excludes_already_banned_genres(tmp_path, monkeyp
     assert "trumpet" not in content
 
 
+def test_main_no_clusters_suppresses_cluster_section(tmp_path, monkeypatch, capsys):
+    db_path = tmp_path / "genres.db"
+
+    cache = Cache(str(db_path))
+    cache.mark_done(
+        "Popular Artist", ["yandex music"], _albums(50), _raw([("yandex music", 100)]), "t"
+    )
+    cache.mark_done(
+        "Obscure Artist", ["yander music"], _albums(2), _raw([("yander music", 100)]), "t"
+    )
+    cache.close()
+
+    monkeypatch.setattr(
+        "sys.argv",
+        ["dump_tags.py", "--db-path", str(db_path), "--cutoff", "0.6", "--no-clusters"],
+    )
+
+    dump_tags.main()
+
+    out = capsys.readouterr().out
+    assert "объединение" not in out
+    assert "не найдено" not in out
+
+
+def test_main_max_tracks_keeps_cluster_with_at_least_one_rare_member(tmp_path, monkeypatch, capsys):
+    db_path = tmp_path / "genres.db"
+
+    cache = Cache(str(db_path))
+    # 'yandex music' — популярный жанр с 50 треками. Он ДОЛЖЕН остаться в
+    # выводе кластера при --max-tracks 3, потому что именно ради такой пары
+    # (редкая опечатка + популярный оригинал) и нужны алиасы — иначе не с кем
+    # будет сравнить 'yander music', чтобы понять, куда её мержить.
+    cache.mark_done(
+        "Popular Artist", ["yandex music"], _albums(50), _raw([("yandex music", 100)]), "t"
+    )
+    cache.mark_done(
+        "Obscure Artist", ["yander music"], _albums(2), _raw([("yander music", 100)]), "t"
+    )
+    cache.close()
+
+    monkeypatch.setattr(
+        "sys.argv",
+        ["dump_tags.py", "--db-path", str(db_path), "--cutoff", "0.6", "--max-tracks", "3"],
+    )
+
+    dump_tags.main()
+
+    cluster_section = capsys.readouterr().out.rsplit("объединение", 1)[-1]
+    assert "yandex music" in cluster_section
+    assert "yander music" in cluster_section
+
+
+def test_main_max_tracks_drops_cluster_where_all_members_are_above_threshold(tmp_path, monkeypatch, capsys):
+    db_path = tmp_path / "genres.db"
+
+    cache = Cache(str(db_path))
+    # Оба варианта написания популярны (50 и 20 треков) — при --max-tracks 3
+    # ни один не нуждается в разборе, кластер не должен показываться вовсе.
+    cache.mark_done(
+        "Popular Artist A", ["yandex music"], _albums(50), _raw([("yandex music", 100)]), "t"
+    )
+    cache.mark_done(
+        "Popular Artist B", ["yander music"], _albums(20), _raw([("yander music", 100)]), "t"
+    )
+    cache.close()
+
+    monkeypatch.setattr(
+        "sys.argv",
+        ["dump_tags.py", "--db-path", str(db_path), "--cutoff", "0.6", "--max-tracks", "3"],
+    )
+
+    dump_tags.main()
+
+    out = capsys.readouterr().out
+    assert "объединение" not in out  # заголовок секции с кластерами не печатается вовсе
+    assert "не найдено (с учётом --max-tracks 3)" in out
+
+
+def test_main_without_max_tracks_includes_popular_tags_in_cluster_pool(tmp_path, monkeypatch, capsys):
+    db_path = tmp_path / "genres.db"
+
+    cache = Cache(str(db_path))
+    cache.mark_done(
+        "Popular Artist", ["yandex music"], _albums(50), _raw([("yandex music", 100)]), "t"
+    )
+    cache.mark_done(
+        "Obscure Artist", ["yander music"], _albums(2), _raw([("yander music", 100)]), "t"
+    )
+    cache.close()
+
+    monkeypatch.setattr(
+        "sys.argv", ["dump_tags.py", "--db-path", str(db_path), "--cutoff", "0.6"]
+    )
+
+    dump_tags.main()
+
+    cluster_section = capsys.readouterr().out.rsplit("объединение", 1)[-1]
+    assert "yandex music" in cluster_section
+    assert "yander music" in cluster_section
+
+
 def test_find_similar_clusters_groups_tags_missing_a_separator():
     tags = ["hip hop", "hiphop", "rock"]
     clusters = dump_tags.find_similar_clusters(tags, cutoff=0.8)
