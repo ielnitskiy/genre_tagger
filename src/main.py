@@ -1,5 +1,7 @@
 import argparse
 import logging
+import os
+import signal
 import sqlite3
 import sys
 import time
@@ -10,6 +12,36 @@ from .lastfm import LastfmClient
 from .scanner import run_once
 
 log = logging.getLogger(__name__)
+
+SHUTDOWN_POLL_SECONDS = 1.0  # шаг, которым дробим scan_interval, чтобы SIGTERM/SIGINT прерывали сон быстро
+
+
+def _resolve_log_level() -> int:
+    raw = os.environ.get("LOG_LEVEL", "INFO").upper()
+    level = logging.getLevelName(raw)
+    if not isinstance(level, int):
+        print(f"Unknown LOG_LEVEL {raw!r}, falling back to INFO", file=sys.stderr)
+        return logging.INFO
+    return level
+
+
+def _install_shutdown_handler():
+    stop = {"requested": False}
+
+    def _handle(signum, _frame):
+        log.info("Received signal %d, will stop after the current scan pass", signum)
+        stop["requested"] = True
+
+    signal.signal(signal.SIGTERM, _handle)
+    signal.signal(signal.SIGINT, _handle)
+    return stop
+
+
+def _sleep_interruptibly(seconds: float, stop: dict) -> None:
+    remaining = seconds
+    while remaining > 0 and not stop["requested"]:
+        time.sleep(min(SHUTDOWN_POLL_SECONDS, remaining))
+        remaining -= SHUTDOWN_POLL_SECONDS
 
 
 def _rewrite_on_config_change(cache: Cache, lastfm: LastfmClient, config_hash: str) -> None:
@@ -35,7 +67,7 @@ def _rewrite_on_config_change(cache: Cache, lastfm: LastfmClient, config_hash: s
 
 def main() -> None:
     logging.basicConfig(
-        level=logging.INFO,
+        level=_resolve_log_level(),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
@@ -80,9 +112,13 @@ def main() -> None:
         run_once(config, cache, lastfm, force_scan=args.force_scan)
         return
 
-    while True:
+    stop = _install_shutdown_handler()
+    while not stop["requested"]:
         run_once(config, cache, lastfm, force_scan=args.force_scan)
-        time.sleep(config.scan_interval_seconds)
+        if stop["requested"]:
+            break
+        _sleep_interruptibly(config.scan_interval_seconds, stop)
+    log.info("Shutdown complete")
 
 
 if __name__ == "__main__":
