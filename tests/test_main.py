@@ -201,6 +201,21 @@ def test_ban_genre_creates_file_with_canonicalized_entry(tmp_path, monkeypatch):
     assert load_banlist(str(banlist_path)) == {"k pop"}
 
 
+def test_ban_genre_accepts_multiple_values_in_one_call(tmp_path, monkeypatch):
+    banlist_path = tmp_path / "banlist.json"
+    config = _config_with_banlist_path(tmp_path, banlist_path)
+    monkeypatch.setattr(main_module, "load_config", lambda: config)
+    monkeypatch.setattr(
+        "sys.argv", ["genre-tagger", "--ban-genre", "trumpet", "Icelandic", "belarussian"]
+    )
+
+    main_module.main()
+
+    from src.lastfm import load_banlist
+
+    assert load_banlist(str(banlist_path)) == {"trumpet", "icelandic", "belarussian"}
+
+
 def test_ban_genre_merges_into_existing_file(tmp_path, monkeypatch):
     banlist_path = tmp_path / "banlist.json"
     from src.lastfm import save_banlist

@@ -123,6 +123,28 @@ def test_list_artists_returns_all_known_artists(cache):
     assert sorted(cache.list_artists()) == ["Artist A", "Artist B"]
 
 
+def test_iter_genres_yields_artist_and_parsed_genre_list(cache):
+    cache.mark_done("Artist A", ["rock", "pop"], {}, None, "t")
+    cache.mark_done("Artist B", None, {}, None, "t")
+    assert sorted(cache.iter_genres()) == [("Artist A", ["rock", "pop"]), ("Artist B", None)]
+
+
+def test_iter_genre_track_counts_sums_files_across_albums(cache):
+    albums = {
+        "Album 1": {"mtime": 0.0, "files": ["a.mp3", "b.mp3"]},
+        "Album 2": {"mtime": 0.0, "files": ["c.mp3"]},
+    }
+    cache.mark_done("Artist A", ["rock"], albums, None, "t")
+    cache.mark_done("Artist B", None, {}, None, "t")
+
+    result = {artist: (genres, count) for artist, genres, count in cache.iter_genre_track_counts()}
+
+    assert result == {
+        "Artist A": (["rock"], 3),
+        "Artist B": (None, 0),
+    }
+
+
 def test_wipe_all_clears_artists_force_rewrite_and_config_hash(cache):
     cache.mark_done("Artist", ["rock"], {}, None, "t")
     cache.set_force_rewrite("Artist")

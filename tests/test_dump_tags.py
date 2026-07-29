@@ -10,6 +10,14 @@ def _raw(tags):
     return json.dumps({"toptags": {"tag": [{"name": n, "count": str(c)} for n, c in tags]}})
 
 
+def _albums(*file_counts):
+    """Строит albums-словарь, где i-й альбом содержит file_counts[i] файлов."""
+    return {
+        f"Album {i}": {"mtime": 0.0, "files": [f"track{n}.mp3" for n in range(count)]}
+        for i, count in enumerate(file_counts)
+    }
+
+
 @pytest.fixture
 def cache(tmp_path):
     c = Cache(str(tmp_path / "genres.db"))
@@ -48,6 +56,111 @@ def test_aggregate_ignores_artists_without_raw_response(cache):
 def test_aggregate_skips_unparseable_raw_response(cache):
     cache.mark_done("Artist", None, {}, "not json", "t")
     assert dump_tags.aggregate(cache) == {}
+
+
+def test_final_genre_track_counts_sums_tracks_not_artists(cache):
+    cache.mark_done("Artist A", ["rock", "pop"], _albums(3), None, "t")  # 3 трека
+    cache.mark_done("Artist B", ["rock"], _albums(1), None, "t")  # 1 трек
+    cache.mark_done("Artist C", ["jazz"], _albums(2, 5), None, "t")  # 7 треков
+
+    counts = dump_tags.final_genre_track_counts(cache)
+
+    assert counts == {"rock": 4, "pop": 3, "jazz": 7}
+
+
+def test_final_genre_track_counts_ignores_artists_with_no_genre(cache):
+    cache.mark_done("Artist A", None, _albums(5), None, "t")
+    assert dump_tags.final_genre_track_counts(cache) == {}
+
+
+def test_final_genre_track_counts_counts_genre_once_per_artist_not_per_occurrence(cache):
+    # Дубли в genre (не должно случаться в реальности) не должны задваивать
+    # счётчик треков — жанр всё равно применяется к одним и тем же трекам.
+    cache.mark_done("Artist A", ["rock", "rock"], _albums(4), None, "t")
+    assert dump_tags.final_genre_track_counts(cache) == {"rock": 4}
+
+
+def test_final_genre_artist_counts_counts_distinct_artists_per_genre(cache):
+    cache.mark_done("Artist A", ["rock", "pop"], {}, None, "t")
+    cache.mark_done("Artist B", ["rock"], {}, None, "t")
+    cache.mark_done("Artist C", ["jazz"], {}, None, "t")
+
+    counts = dump_tags.final_genre_artist_counts(cache)
+
+    assert counts == {"rock": 2, "pop": 1, "jazz": 1}
+
+
+def test_final_genre_artist_counts_ignores_artists_with_no_genre(cache):
+    cache.mark_done("Artist A", None, {}, None, "t")
+    assert dump_tags.final_genre_artist_counts(cache) == {}
+
+
+def test_final_genre_artist_counts_counts_repeated_genre_once_per_artist(cache):
+    # Не должно случаться в реальности (genre — список без дублей), но
+    # set(genres) в реализации должен защитить от двойного счёта на всякий случай.
+    cache.mark_done("Artist A", ["rock", "rock"], {}, None, "t")
+    assert dump_tags.final_genre_artist_counts(cache) == {"rock": 1}
+
+
+def test_main_ban_below_writes_genres_at_or_under_threshold_to_banlist(tmp_path, monkeypatch, capsys):
+    db_path = tmp_path / "genres.db"
+    banlist_path = tmp_path / "banlist.json"
+
+    cache = Cache(str(db_path))
+    cache.mark_done("Popular Artist", ["rock"], _albums(50), None, "t")  # 50 треков rock
+    cache.mark_done("Obscure Artist", ["trumpet"], _albums(2), None, "t")  # 2 трека trumpet
+    cache.close()
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "dump_tags.py",
+            "--db-path",
+            str(db_path),
+            "--ban-below",
+            "10",
+            "--banlist-path",
+            str(banlist_path),
+        ],
+    )
+
+    dump_tags.main()
+
+    from src.lastfm import load_banlist
+
+    assert load_banlist(str(banlist_path)) == {"trumpet"}
+    assert "trumpet" in capsys.readouterr().out
+
+
+def test_main_ban_below_merges_with_existing_banlist(tmp_path, monkeypatch):
+    from src.lastfm import save_banlist
+
+    db_path = tmp_path / "genres.db"
+    banlist_path = tmp_path / "banlist.json"
+    save_banlist(str(banlist_path), frozenset({"already banned"}))
+
+    cache = Cache(str(db_path))
+    cache.mark_done("Obscure Artist", ["trumpet"], _albums(1), None, "t")
+    cache.close()
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "dump_tags.py",
+            "--db-path",
+            str(db_path),
+            "--ban-below",
+            "10",
+            "--banlist-path",
+            str(banlist_path),
+        ],
+    )
+
+    dump_tags.main()
+
+    from src.lastfm import load_banlist
+
+    assert load_banlist(str(banlist_path)) == {"already banned", "trumpet"}
 
 
 def test_find_similar_clusters_groups_tags_missing_a_separator():

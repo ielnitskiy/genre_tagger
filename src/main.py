@@ -122,9 +122,11 @@ def main() -> None:
     )
     parser.add_argument(
         "--ban-genre",
+        nargs="+",
         metavar="GENRE",
         help=(
-            "Добавить жанр в бан-лист (GENRE_BANLIST_FILE): забаненный жанр "
+            "Добавить один или несколько жанров в бан-лист (GENRE_BANLIST_FILE), "
+            "например --ban-genre trumpet icelandic belarussian: забаненный жанр "
             "больше не будет проставляться новым исполнителям и будет снят с "
             "ID3 и из БД у всех уже обработанных, у кого он встречается — "
             "эффект применяется на следующем обычном запуске (--once), как и "
@@ -213,16 +215,16 @@ def main() -> None:
         return
 
     if args.ban_genre:
-        canonical = canonicalize_tag_name(args.ban_genre)
-        if not canonical:
-            log.error("--ban-genre argument must be non-empty")
+        canonicals = [canonicalize_tag_name(g) for g in args.ban_genre]
+        if not all(canonicals):
+            log.error("--ban-genre arguments must be non-empty")
             sys.exit(1)
         banned = set(load_banlist(config.genre_banlist_path))
-        banned.add(canonical)
+        banned.update(canonicals)
         save_banlist(config.genre_banlist_path, frozenset(banned))
         log.info(
-            "Added %r to genre banlist %s (%d total)",
-            canonical,
+            "Added %s to genre banlist %s (%d total)",
+            ", ".join(repr(c) for c in canonicals),
             config.genre_banlist_path,
             len(banned),
         )

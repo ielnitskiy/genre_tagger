@@ -152,6 +152,30 @@ class Cache:
         )
         yield from cur.fetchall()
 
+    def iter_genres(self) -> Iterator[tuple[str, Optional[list[str]]]]:
+        """Отдаёт уже итоговый (после MIN_TAG_COUNT/MAX_GENRES/алиасов/бан-листа)
+        список жанров каждого артиста — используется scripts/dump_tags.py, чтобы
+        посчитать, на скольких артистах реально стоит каждый жанр в библиотеке
+        (в отличие от aggregate(), который суммирует сырой вес по ВСЕМ тегам
+        Last.fm, а не только по тем 1-3, что попали в ID3)."""
+        cur = self._conn.execute("SELECT artist, genre FROM artist_genre")
+        for artist, genre_json in cur.fetchall():
+            yield artist, (json.loads(genre_json) if genre_json is not None else None)
+
+    def iter_genre_track_counts(self) -> Iterator[tuple[str, Optional[list[str]], int]]:
+        """Как iter_genres(), но дополнительно отдаёт число файлов (треков) у
+        артиста — посчитано из уже сохранённого albums (сумма len(files) по
+        всем альбомам), без обращения к диску. Используется scripts/dump_tags.py
+        для метрики "сколько треков реально несут этот жанр" — именно треки, а
+        не число артистов, точнее отражают масштаб проблемы для дискографий
+        с одним альбомом на пару песен vs полными дискографиями."""
+        cur = self._conn.execute("SELECT artist, genre, albums FROM artist_genre")
+        for artist, genre_json, albums_json in cur.fetchall():
+            genres = json.loads(genre_json) if genre_json is not None else None
+            albums = json.loads(albums_json)
+            track_count = sum(len(album.get("files", [])) for album in albums.values())
+            yield artist, genres, track_count
+
     def get_config_hash(self) -> Optional[str]:
         cur = self._conn.execute("SELECT value FROM meta WHERE key = 'config_hash'")
         row = cur.fetchone()
