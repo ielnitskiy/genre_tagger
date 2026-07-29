@@ -82,6 +82,32 @@ def save_aliases(path: str, aliases: dict[str, str]) -> None:
         f.write("\n")
 
 
+def load_banlist(path: Optional[str]) -> frozenset[str]:
+    """Читает список запрещённых жанров (см. --ban-genre/--list-banned-genres
+    в main.py). Отсутствующий файл — не ошибка, просто список ещё пуст."""
+    if not path or not os.path.exists(path):
+        return frozenset()
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        log.warning("Cannot load genre banlist from %s: %s", path, exc)
+        return frozenset()
+    if not isinstance(raw, list):
+        log.warning("Genre banlist file %s must contain a JSON array, ignoring", path)
+        return frozenset()
+    return frozenset(
+        canonical for item in raw if (canonical := canonicalize_tag_name(str(item)))
+    )
+
+
+def save_banlist(path: str, banned: frozenset[str]) -> None:
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(sorted(banned), f, ensure_ascii=False, indent=2)
+        f.write("\n")
+
+
 class LastfmClient:
     def __init__(
         self,
@@ -89,11 +115,13 @@ class LastfmClient:
         min_tag_count: int,
         max_genres: int,
         aliases: Optional[dict[str, str]] = None,
+        banned: Optional[frozenset[str]] = None,
     ):
         self._api_key = api_key
         self._min_tag_count = min_tag_count
         self._max_genres = max_genres
         self._aliases = aliases or {}
+        self._banned = banned or frozenset()
         self._last_request_at = 0.0
 
     def _throttle(self) -> None:
@@ -190,7 +218,7 @@ class LastfmClient:
             if not canonical:
                 continue
             canonical = self._aliases.get(canonical, canonical)
-            if canonical in TAG_BLOCKLIST:
+            if canonical in TAG_BLOCKLIST or canonical in self._banned:
                 continue
             if YEAR_RE.match(canonical):
                 continue

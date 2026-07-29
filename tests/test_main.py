@@ -173,6 +173,96 @@ def test_aliases_fingerprint_changes_when_aliases_change():
     assert fp_a != fp_b
 
 
+def _config_with_banlist_path(tmp_path, banlist_path):
+    return Config(
+        music_dir=str(tmp_path / "music"),
+        db_path=str(tmp_path / "genres.db"),
+        lastfm_api_key="key",
+        scan_interval_seconds=1,
+        min_tag_count=1,
+        max_genres=1,
+        genre_ttl_days=180,
+        genre_aliases_path=str(tmp_path / "aliases.json"),
+        genre_banlist_path=str(banlist_path),
+        skip_dirs=frozenset(),
+    )
+
+
+def test_ban_genre_creates_file_with_canonicalized_entry(tmp_path, monkeypatch):
+    banlist_path = tmp_path / "banlist.json"
+    config = _config_with_banlist_path(tmp_path, banlist_path)
+    monkeypatch.setattr(main_module, "load_config", lambda: config)
+    monkeypatch.setattr("sys.argv", ["genre-tagger", "--ban-genre", "K-Pop"])
+
+    main_module.main()
+
+    from src.lastfm import load_banlist
+
+    assert load_banlist(str(banlist_path)) == {"k pop"}
+
+
+def test_ban_genre_merges_into_existing_file(tmp_path, monkeypatch):
+    banlist_path = tmp_path / "banlist.json"
+    from src.lastfm import save_banlist
+
+    save_banlist(str(banlist_path), frozenset({"pop"}))
+    config = _config_with_banlist_path(tmp_path, banlist_path)
+    monkeypatch.setattr(main_module, "load_config", lambda: config)
+    monkeypatch.setattr("sys.argv", ["genre-tagger", "--ban-genre", "disco"])
+
+    main_module.main()
+
+    from src.lastfm import load_banlist
+
+    assert load_banlist(str(banlist_path)) == {"pop", "disco"}
+
+
+def test_ban_genre_rejects_empty_argument(tmp_path, monkeypatch):
+    banlist_path = tmp_path / "banlist.json"
+    config = _config_with_banlist_path(tmp_path, banlist_path)
+    monkeypatch.setattr(main_module, "load_config", lambda: config)
+    monkeypatch.setattr("sys.argv", ["genre-tagger", "--ban-genre", "   "])
+
+    with pytest.raises(SystemExit):
+        main_module.main()
+
+    assert not banlist_path.exists()
+
+
+def test_list_banned_genres_prints_sorted_entries(tmp_path, monkeypatch, capsys):
+    banlist_path = tmp_path / "banlist.json"
+    from src.lastfm import save_banlist
+
+    save_banlist(str(banlist_path), frozenset({"zeta genre", "alpha genre"}))
+    config = _config_with_banlist_path(tmp_path, banlist_path)
+    monkeypatch.setattr(main_module, "load_config", lambda: config)
+    monkeypatch.setattr("sys.argv", ["genre-tagger", "--list-banned-genres"])
+
+    main_module.main()
+
+    out = capsys.readouterr().out
+    assert out.index("alpha genre") < out.index("zeta genre")
+
+
+def test_list_banned_genres_reports_empty_list(tmp_path, monkeypatch, capsys):
+    banlist_path = tmp_path / "banlist.json"
+    config = _config_with_banlist_path(tmp_path, banlist_path)
+    monkeypatch.setattr(main_module, "load_config", lambda: config)
+    monkeypatch.setattr("sys.argv", ["genre-tagger", "--list-banned-genres"])
+
+    main_module.main()
+
+    assert "пуст" in capsys.readouterr().out
+
+
+def test_banlist_fingerprint_changes_when_banlist_changes():
+    fp_a = main_module._banlist_fingerprint(frozenset({"pop"}))
+    fp_b = main_module._banlist_fingerprint(frozenset({"pop", "disco"}))
+    fp_same = main_module._banlist_fingerprint(frozenset({"pop"}))
+    assert fp_a == fp_same
+    assert fp_a != fp_b
+
+
 def _make_tagged_mp3(path):
     from mutagen.easyid3 import EasyID3
 

@@ -84,6 +84,30 @@ def _tag_new_files(
     )
 
 
+def _strip_genre_from_files(
+    artist_path: str,
+    album_name: str,
+    files_rel: set[str],
+    failed_files: set[str],
+) -> None:
+    album_path = os.path.join(artist_path, album_name)
+    stripped = 0
+    for rel_path in files_rel:
+        full_path = os.path.join(album_path, rel_path)
+        try:
+            if tagger.remove_genre(full_path):
+                stripped += 1
+        except (MutagenError, OSError) as exc:
+            log.warning("Failed to strip genre from %s, will retry next scan: %s", full_path, exc)
+            failed_files.add(rel_path)
+    log.info(
+        "Stripped genre from %d/%d file(s) in album %r (no genres left after filtering, e.g. banlist)",
+        stripped,
+        len(files_rel),
+        album_name,
+    )
+
+
 def scan_artist(
     artist_name: str,
     music_dir: str,
@@ -186,7 +210,20 @@ def scan_artist(
             _tag_new_files(artist_path, album_name, new_files_rel, genres, force, failed_files)
             if failed_files:
                 # Форсируем повторный listdir этого альбома на следующем скане,
-                # независимо от того, изменится ли его mtime на диске.
+                # независимо от того, изменится ли её mtime на диске.
+                current_albums[album_name]["mtime"] = FORCE_RECHECK_MTIME
+    elif force:
+        # genres стал None при принудительной перезаписи — значит все жанры
+        # артиста отфильтрованы (например, попали в бан-лист). Раз тег уже мог
+        # стоять на файлах с прошлого прохода, снимаем его явно, а не просто
+        # пропускаем: иначе устаревший забаненный жанр так и останется висеть
+        # на диске (см. --ban-genre в main.py).
+        for album_name, new_files_rel in new_files_by_album.items():
+            if not new_files_rel:
+                continue
+            failed_files = set()
+            _strip_genre_from_files(artist_path, album_name, new_files_rel, failed_files)
+            if failed_files:
                 current_albums[album_name]["mtime"] = FORCE_RECHECK_MTIME
 
     if force:

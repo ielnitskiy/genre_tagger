@@ -16,7 +16,8 @@ class Config:
     max_genres: int
     genre_ttl_days: int
     genre_aliases_path: str
-    skip_dirs: frozenset[str]
+    genre_banlist_path: str = "/data/genre_banlist.json"
+    skip_dirs: frozenset[str] = frozenset()
 
     @property
     def config_hash(self) -> str:
@@ -59,5 +60,6 @@ def load_config() -> Config:
         max_genres=_int_env("MAX_GENRES", "3"),
         genre_ttl_days=_int_env("GENRE_TTL_DAYS", "180"),
         genre_aliases_path=os.environ.get("GENRE_ALIASES_FILE", "/data/genre_aliases.json"),
+        genre_banlist_path=os.environ.get("GENRE_BANLIST_FILE", "/data/genre_banlist.json"),
         skip_dirs=skip_dirs,
     )

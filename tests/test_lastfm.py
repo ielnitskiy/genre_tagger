@@ -4,7 +4,7 @@ import pytest
 import requests
 import responses
 
-from src.lastfm import API_URL, LastfmClient, load_aliases, save_aliases
+from src.lastfm import API_URL, LastfmClient, load_aliases, load_banlist, save_aliases, save_banlist
 
 
 @pytest.fixture(autouse=True)
@@ -13,9 +13,13 @@ def no_real_sleep(monkeypatch):
     monkeypatch.setattr("src.lastfm.time.sleep", lambda _seconds: None)
 
 
-def _client(min_tag_count=10, max_genres=3, aliases=None):
+def _client(min_tag_count=10, max_genres=3, aliases=None, banned=None):
     return LastfmClient(
-        api_key="testkey", min_tag_count=min_tag_count, max_genres=max_genres, aliases=aliases
+        api_key="testkey",
+        min_tag_count=min_tag_count,
+        max_genres=max_genres,
+        aliases=aliases,
+        banned=banned,
     )
 
 
@@ -318,6 +322,90 @@ def test_aliases_merge_counts_of_aliased_and_canonical_forms():
     client = _client(min_tag_count=10, max_genres=3, aliases={"hiphop": "hip hop"})
     genres, _raw = client.resolve_genres("Some Artist")
     assert genres == ["hip hop"]  # 6 + 6 = 12, суммарно набирает MIN_TAG_COUNT=10
+
+
+@responses.activate
+def test_banned_genre_is_excluded_from_result():
+    responses.add(
+        responses.GET,
+        API_URL,
+        body=_toptags_body(
+            [
+                {"name": "pop", "count": "50"},
+                {"name": "disco", "count": "40"},
+            ]
+        ),
+        status=200,
+    )
+    client = _client(min_tag_count=10, max_genres=3, banned=frozenset({"pop"}))
+    genres, _raw = client.resolve_genres("Some Artist")
+    assert genres == ["disco"]
+
+
+@responses.activate
+def test_banned_genre_applies_after_alias_remap():
+    responses.add(
+        responses.GET,
+        API_URL,
+        body=_toptags_body([{"name": "hiphop", "count": "50"}]),
+        status=200,
+    )
+    client = _client(
+        min_tag_count=10, max_genres=3, aliases={"hiphop": "hip hop"}, banned=frozenset({"hip hop"})
+    )
+    genres, _raw = client.resolve_genres("Some Artist")
+    assert genres is None
+
+
+@responses.activate
+def test_all_genres_banned_returns_none():
+    responses.add(
+        responses.GET,
+        API_URL,
+        body=_toptags_body([{"name": "pop", "count": "50"}]),
+        status=200,
+    )
+    client = _client(min_tag_count=10, max_genres=3, banned=frozenset({"pop"}))
+    genres, _raw = client.resolve_genres("Some Artist")
+    assert genres is None
+
+
+def test_load_banlist_returns_empty_frozenset_for_missing_file(tmp_path):
+    assert load_banlist(str(tmp_path / "missing.json")) == frozenset()
+
+
+def test_load_banlist_returns_empty_frozenset_for_none_path():
+    assert load_banlist(None) == frozenset()
+
+
+def test_load_banlist_canonicalizes_entries(tmp_path):
+    path = tmp_path / "banlist.json"
+    path.write_text('["K-Pop", "Seen_Live "]', encoding="utf-8")
+    assert load_banlist(str(path)) == {"k pop", "seen live"}
+
+
+def test_load_banlist_returns_empty_frozenset_on_invalid_json(tmp_path, caplog):
+    path = tmp_path / "banlist.json"
+    path.write_text("not json", encoding="utf-8")
+    with caplog.at_level("WARNING"):
+        assert load_banlist(str(path)) == frozenset()
+    assert "banlist" in caplog.text.lower()
+
+
+def test_load_banlist_returns_empty_frozenset_when_json_is_not_an_array(tmp_path):
+    path = tmp_path / "banlist.json"
+    path.write_text('{"not": "an array"}', encoding="utf-8")
+    assert load_banlist(str(path)) == frozenset()
+
+
+def test_save_banlist_writes_sorted_json_readable_by_load_banlist(tmp_path):
+    path = tmp_path / "nested" / "banlist.json"
+    save_banlist(str(path), frozenset({"zeta genre", "alpha genre"}))
+
+    assert path.exists()
+    assert load_banlist(str(path)) == {"zeta genre", "alpha genre"}
+    content = path.read_text(encoding="utf-8")
+    assert content.index('"alpha genre"') < content.index('"zeta genre"')
 
 
 def test_load_aliases_returns_empty_dict_for_missing_file(tmp_path):

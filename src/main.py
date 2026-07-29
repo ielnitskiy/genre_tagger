@@ -9,7 +9,14 @@ import time
 
 from .cache import Cache
 from .config import ConfigError, load_config
-from .lastfm import LastfmClient, canonicalize_tag_name, load_aliases, save_aliases
+from .lastfm import (
+    LastfmClient,
+    canonicalize_tag_name,
+    load_aliases,
+    load_banlist,
+    save_aliases,
+    save_banlist,
+)
 from .scanner import run_once, scan_artist, wipe_all_genre_tags
 
 log = logging.getLogger(__name__)
@@ -49,12 +56,19 @@ def _aliases_fingerprint(aliases: dict[str, str]) -> str:
     return hashlib.sha256(repr(sorted(aliases.items())).encode()).hexdigest()[:16]
 
 
+def _banlist_fingerprint(banned: frozenset[str]) -> str:
+    return hashlib.sha256(repr(sorted(banned)).encode()).hexdigest()[:16]
+
+
 def _rewrite_on_config_change(cache: Cache, lastfm: LastfmClient, config_hash: str) -> None:
     """Вопрос 1 из PLAN.md: если MIN_TAG_COUNT/MAX_GENRES изменились с прошлого
-    запуска (или изменился словарь GENRE_ALIASES_FILE — см. _aliases_fingerprint
-    в вызывающем коде), пересчитываем фильтрацию тегов локально из уже
-    сохранённого raw_response (без обращения к Last.fm) и форсируем перезапись
-    ID3 у всех затронутых артистов на следующем run_once."""
+    запуска (или изменился словарь GENRE_ALIASES_FILE / GENRE_BANLIST_FILE — см.
+    _aliases_fingerprint/_banlist_fingerprint в вызывающем коде), пересчитываем
+    фильтрацию тегов локально из уже сохранённого raw_response (без обращения к
+    Last.fm) и форсируем перезапись ID3 у всех затронутых артистов на следующем
+    run_once. Если после пересчёта у артиста не осталось ни одного жанра
+    (например, все попали в бан-лист), genre в кэше станет None, а
+    scan_artist/_strip_genre_from_files снимет тег с уже затегированных файлов."""
     stored_hash = cache.get_config_hash()
     if stored_hash == config_hash:
         return
@@ -105,6 +119,21 @@ def main() -> None:
     )
     parser.add_argument(
         "--list-aliases", action="store_true", help="Показать текущий словарь синонимов жанров и выйти"
+    )
+    parser.add_argument(
+        "--ban-genre",
+        metavar="GENRE",
+        help=(
+            "Добавить жанр в бан-лист (GENRE_BANLIST_FILE): забаненный жанр "
+            "больше не будет проставляться новым исполнителям и будет снят с "
+            "ID3 и из БД у всех уже обработанных, у кого он встречается — "
+            "эффект применяется на следующем обычном запуске (--once), как и "
+            "при смене MIN_TAG_COUNT/MAX_GENRES/словаря синонимов. Ничего не "
+            "сканирует само по себе — только правит файл."
+        ),
+    )
+    parser.add_argument(
+        "--list-banned-genres", action="store_true", help="Показать текущий бан-лист жанров и выйти"
     )
     parser.add_argument(
         "--wipe-all-genres",
@@ -183,6 +212,31 @@ def main() -> None:
                 print(f"{from_tag} -> {to_tag}")
         return
 
+    if args.ban_genre:
+        canonical = canonicalize_tag_name(args.ban_genre)
+        if not canonical:
+            log.error("--ban-genre argument must be non-empty")
+            sys.exit(1)
+        banned = set(load_banlist(config.genre_banlist_path))
+        banned.add(canonical)
+        save_banlist(config.genre_banlist_path, frozenset(banned))
+        log.info(
+            "Added %r to genre banlist %s (%d total)",
+            canonical,
+            config.genre_banlist_path,
+            len(banned),
+        )
+        return
+
+    if args.list_banned_genres:
+        banned = load_banlist(config.genre_banlist_path)
+        if not banned:
+            print(f"Бан-лист жанров пуст ({config.genre_banlist_path})")
+        else:
+            for genre in sorted(banned):
+                print(genre)
+        return
+
     if args.wipe_all_genres:
         scanned, affected, failed = wipe_all_genre_tags(config.music_dir, dry_run=not args.yes)
         if not args.yes:
@@ -220,7 +274,10 @@ def main() -> None:
         sys.exit(1)
 
     aliases = load_aliases(config.genre_aliases_path)
-    lastfm = LastfmClient(config.lastfm_api_key, config.min_tag_count, config.max_genres, aliases=aliases)
+    banned = load_banlist(config.genre_banlist_path)
+    lastfm = LastfmClient(
+        config.lastfm_api_key, config.min_tag_count, config.max_genres, aliases=aliases, banned=banned
+    )
 
     if args.reset_artist:
         cache.reset(args.reset_artist)
@@ -246,7 +303,7 @@ def main() -> None:
         log.info("Finished tagging artist %r", args.tag_artist)
         return
 
-    combined_config_hash = f"{config.config_hash}:{_aliases_fingerprint(aliases)}"
+    combined_config_hash = f"{config.config_hash}:{_aliases_fingerprint(aliases)}:{_banlist_fingerprint(banned)}"
     _rewrite_on_config_change(cache, lastfm, combined_config_hash)
 
     if args.once:
