@@ -4,7 +4,16 @@ import pytest
 import requests
 import responses
 
-from src.lastfm import API_URL, LastfmClient, load_aliases, load_banlist, save_aliases, save_banlist
+from src.lastfm import (
+    API_URL,
+    LastfmClient,
+    flatten_alias_groups,
+    load_alias_groups,
+    load_aliases,
+    load_banlist,
+    save_alias_groups,
+    save_banlist,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -358,6 +367,37 @@ def test_banned_genre_applies_after_alias_remap():
 
 
 @responses.activate
+def test_alias_does_not_bypass_ban_on_the_source_tag_name():
+    """Бан проверяется и ДО подстановки алиаса: иначе алиас на забаненное имя
+    молча обходил бы бан. CLI такой конфликт создать не даёт, но файл могли
+    поправить руками."""
+    responses.add(
+        responses.GET,
+        API_URL,
+        body=_toptags_body([{"name": "trumpet", "count": "50"}]),
+        status=200,
+    )
+    client = _client(
+        min_tag_count=10, max_genres=3, aliases={"trumpet": "jazz"}, banned=frozenset({"trumpet"})
+    )
+    genres, _raw = client.resolve_genres("Some Artist")
+    assert genres is None
+
+
+@responses.activate
+def test_alias_does_not_bypass_builtin_tag_blocklist():
+    responses.add(
+        responses.GET,
+        API_URL,
+        body=_toptags_body([{"name": "seen live", "count": "50"}]),
+        status=200,
+    )
+    client = _client(min_tag_count=10, max_genres=3, aliases={"seen live": "rock"})
+    genres, _raw = client.resolve_genres("Some Artist")
+    assert genres is None
+
+
+@responses.activate
 def test_all_genres_banned_returns_none():
     responses.add(
         responses.GET,
@@ -416,10 +456,43 @@ def test_load_aliases_returns_empty_dict_for_none_path():
     assert load_aliases(None) == {}
 
 
-def test_load_aliases_canonicalizes_keys_and_values(tmp_path):
+def test_load_aliases_canonicalizes_group_format(tmp_path):
     path = tmp_path / "aliases.json"
-    path.write_text('{"HipHop": "Hip-Hop", "dnb": "drum and bass"}', encoding="utf-8")
+    path.write_text(
+        '{"Hip-Hop": ["HipHop", "hip_hop "], "drum and bass": ["DnB"]}', encoding="utf-8"
+    )
     assert load_aliases(str(path)) == {"hiphop": "hip hop", "dnb": "drum and bass"}
+
+
+def test_load_alias_groups_returns_canonicalized_groups(tmp_path):
+    path = tmp_path / "aliases.json"
+    path.write_text('{"Metalcore": ["Mathcore", "MATALCORE"]}', encoding="utf-8")
+    assert load_alias_groups(str(path)) == {"metalcore": ["matalcore", "mathcore"]}
+
+
+def test_load_alias_groups_reads_legacy_flat_format(tmp_path, caplog):
+    """Обратная совместимость: файлы, записанные до перехода на группы, должны
+    читаться без ручной миграции — плоская запись разворачивается в группу."""
+    path = tmp_path / "aliases.json"
+    path.write_text('{"hiphop": "hip hop", "mathcore": "metalcore"}', encoding="utf-8")
+
+    with caplog.at_level("INFO"):
+        groups = load_alias_groups(str(path))
+
+    assert groups == {"hip hop": ["hiphop"], "metalcore": ["mathcore"]}
+    assert "old flat format" in caplog.text
+
+
+def test_load_alias_groups_merges_legacy_entries_into_one_group(tmp_path):
+    path = tmp_path / "aliases.json"
+    path.write_text('{"mathcore": "metalcore", "matalcore": "metalcore"}', encoding="utf-8")
+    assert load_alias_groups(str(path)) == {"metalcore": ["matalcore", "mathcore"]}
+
+
+def test_load_alias_groups_drops_self_referential_and_empty_variants(tmp_path):
+    path = tmp_path / "aliases.json"
+    path.write_text('{"metalcore": ["metalcore", "  ", "mathcore"], "pop": []}', encoding="utf-8")
+    assert load_alias_groups(str(path)) == {"metalcore": ["mathcore"]}
 
 
 def test_load_aliases_returns_empty_dict_on_invalid_json(tmp_path, caplog):
@@ -436,12 +509,43 @@ def test_load_aliases_returns_empty_dict_when_json_is_not_an_object(tmp_path):
     assert load_aliases(str(path)) == {}
 
 
-def test_save_aliases_writes_sorted_json_readable_by_load_aliases(tmp_path):
+def test_save_alias_groups_writes_sorted_json_readable_back(tmp_path):
     path = tmp_path / "nested" / "aliases.json"
-    save_aliases(str(path), {"zeta": "z genre", "alpha": "a genre"})
+    save_alias_groups(str(path), {"zeta genre": ["z2", "z1"], "alpha genre": ["a1"]})
 
     assert path.exists()
-    assert load_aliases(str(path)) == {"zeta": "z genre", "alpha": "a genre"}
-    # ключи должны быть отсортированы для читаемых diff'ов при ручном редактировании
+    assert load_alias_groups(str(path)) == {"zeta genre": ["z1", "z2"], "alpha genre": ["a1"]}
+    # и группы, и варианты внутри — отсортированы, для читаемых diff'ов
     content = path.read_text(encoding="utf-8")
-    assert content.index('"alpha"') < content.index('"zeta"')
+    assert content.index('"alpha genre"') < content.index('"zeta genre"')
+    assert content.index('"z1"') < content.index('"z2"')
+
+
+def test_save_alias_groups_omits_empty_groups(tmp_path):
+    path = tmp_path / "aliases.json"
+    save_alias_groups(str(path), {"metalcore": ["mathcore"], "pop": []})
+    assert load_alias_groups(str(path)) == {"metalcore": ["mathcore"]}
+
+
+def test_flatten_alias_groups_resolves_chains_transitively(caplog):
+    """Подстановка в _filter_tags делается одним хопом, поэтому цепочку нужно
+    развернуть при загрузке — иначе 'a' молча превратился бы в промежуточный
+    'b' вместо конечного 'c'."""
+    groups = {"b": ["a"], "c": ["b"]}
+
+    with caplog.at_level("WARNING"):
+        flat = flatten_alias_groups(groups)
+
+    assert flat == {"a": "c", "b": "c"}
+    assert "chain" in caplog.text
+
+
+def test_flatten_alias_groups_breaks_cycles_with_warning(caplog):
+    groups = {"b": ["a"], "a": ["b"]}
+
+    with caplog.at_level("WARNING"):
+        flat = flatten_alias_groups(groups)
+
+    # Цикл не должен ни зависать, ни ломать запуск — теги остаются как есть.
+    assert flat == {}
+    assert "cycle" in caplog.text

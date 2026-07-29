@@ -9,7 +9,7 @@ from mutagen.easyid3 import EasyID3
 from src import main as main_module
 from src import scanner
 from src.cache import Cache
-from src.lastfm import LastfmClient, load_aliases, save_aliases
+from src.lastfm import LastfmClient, load_alias_groups, load_aliases, save_alias_groups
 from tests.conftest import make_mp3
 
 
@@ -49,10 +49,9 @@ def test_adding_alias_retags_already_scanned_library_without_network_calls(tmp_p
     cache.set_config_hash(f"1:3:{main_module._aliases_fingerprint({})}")
 
     # 2. Пользователь замечает дубль и добавляет синоним через --add-alias.
-    save_aliases(str(aliases_path), {})
-    aliases = load_aliases(str(aliases_path))
-    aliases["hiphop"] = "hip hop"
-    save_aliases(str(aliases_path), aliases)
+    groups = load_alias_groups(str(aliases_path))
+    groups.setdefault("hip hop", []).append("hiphop")
+    save_alias_groups(str(aliases_path), groups)
 
     # 3. Следующий обычный прогон: main._rewrite_on_config_change пересчитывает
     #    жанры всех артистов из сохранённого raw_response с новым словарём —

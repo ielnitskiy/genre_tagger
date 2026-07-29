@@ -50,11 +50,20 @@ def canonicalize_tag_name(name: str) -> str:
     return SEPARATOR_RE.sub(" ", name.strip().lower()).strip()
 
 
-def load_aliases(path: Optional[str]) -> dict[str, str]:
-    """Читает словарь синонимов жанров (см. --add-alias/--list-aliases в main.py).
-    Отсутствующий файл — не ошибка, просто словарь ещё пуст. Ключи и значения
-    приводятся к тому же каноническому виду, что и теги Last.fm, чтобы словарь
-    работал независимо от того, как их записали руками."""
+def load_alias_groups(path: Optional[str]) -> dict[str, list[str]]:
+    """Читает словарь синонимов жанров в его файловом виде: главный тег ->
+    список вариантов написания, которые к нему сводятся, например
+    {"metalcore": ["matalcore", "mathcore"]}. Используется CLI-командами
+    (--add-alias/--remove-alias/--list-aliases); движку фильтрации нужен
+    плоский вид, см. load_aliases().
+
+    Отсутствующий файл — не ошибка, просто словарь ещё пуст. Всё содержимое
+    канонизируется тем же canonicalize_tag_name(), что и теги Last.fm, чтобы
+    словарь работал независимо от того, как его записали руками.
+
+    Для обратной совместимости понимается и старый плоский формат
+    {"вариант": "главный тег"} — такие записи разворачиваются в группы, и файл
+    будет перезаписан в новом виде при первой же правке через CLI."""
     if not path or not os.path.exists(path):
         return {}
     try:
@@ -66,20 +75,92 @@ def load_aliases(path: Optional[str]) -> dict[str, str]:
     if not isinstance(raw, dict):
         log.warning("Genre aliases file %s must contain a JSON object, ignoring", path)
         return {}
-    aliases = {}
+
+    groups: dict[str, list[str]] = {}
+    legacy_entries = 0
     for key, value in raw.items():
-        canonical_key = canonicalize_tag_name(str(key))
-        canonical_value = canonicalize_tag_name(str(value))
-        if canonical_key and canonical_value:
-            aliases[canonical_key] = canonical_value
-    return aliases
+        canonical = canonicalize_tag_name(str(key))
+        if not canonical:
+            continue
+        if isinstance(value, list):
+            variants = [canonicalize_tag_name(str(v)) for v in value]
+        else:
+            # Старый плоский формат: ключ был вариантом, значение — главным тегом.
+            legacy_entries += 1
+            canonical, variants = canonicalize_tag_name(str(value)), [canonical]
+            if not canonical:
+                continue
+        for variant in variants:
+            # Пустые и самоссылочные варианты бессмысленны — молча отбрасываем.
+            if variant and variant != canonical:
+                groups.setdefault(canonical, [])
+                if variant not in groups[canonical]:
+                    groups[canonical].append(variant)
+
+    if legacy_entries:
+        log.info(
+            "Genre aliases file %s still uses the old flat format for %d entr(y/ies); "
+            "it will be rewritten as groups on the next --add-alias/--remove-alias",
+            path,
+            legacy_entries,
+        )
+    return {canonical: sorted(variants) for canonical, variants in groups.items() if variants}
 
 
-def save_aliases(path: str, aliases: dict[str, str]) -> None:
+def save_alias_groups(path: str, groups: dict[str, list[str]]) -> None:
+    """Пишет словарь синонимов в новом (групповом) формате, отсортированным для
+    читаемых diff'ов при ручном просмотре. Пустые группы не сохраняются."""
     Path(path).parent.mkdir(parents=True, exist_ok=True)
+    serializable = {
+        canonical: sorted(set(variants)) for canonical, variants in sorted(groups.items()) if variants
+    }
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(dict(sorted(aliases.items())), f, ensure_ascii=False, indent=2)
+        json.dump(serializable, f, ensure_ascii=False, indent=2)
         f.write("\n")
+
+
+def flatten_alias_groups(groups: dict[str, list[str]]) -> dict[str, str]:
+    """Разворачивает группы в плоскую таблицу подстановки вариант -> главный тег,
+    которой пользуется LastfmClient._filter_tags.
+
+    Цепочки (a -> b, где b сам является вариантом c) разрешаются транзитивно,
+    чтобы результат совпадал с интуицией: подстановка в _filter_tags делается
+    одним хопом, поэтому нерасрешённая цепочка молча давала бы промежуточный
+    тег. Циклы разрываются в no-op с предупреждением — иначе разрешение
+    зациклилось бы."""
+    flat: dict[str, str] = {}
+    for canonical, variants in groups.items():
+        for variant in variants:
+            flat[variant] = canonical
+
+    resolved: dict[str, str] = {}
+    for variant, canonical in flat.items():
+        seen = [variant]
+        target = canonical
+        while target in flat and target not in seen:
+            seen.append(target)
+            target = flat[target]
+        if target in flat:
+            log.warning(
+                "Genre alias cycle detected (%s), breaking it: %r is left as-is",
+                " -> ".join(seen + [target]),
+                variant,
+            )
+            continue
+        if len(seen) > 1:
+            log.warning(
+                "Genre alias chain detected (%s), resolving %r directly to %r",
+                " -> ".join(seen + [target]),
+                variant,
+                target,
+            )
+        resolved[variant] = target
+    return resolved
+
+
+def load_aliases(path: Optional[str]) -> dict[str, str]:
+    """Плоская таблица подстановки вариант -> главный тег для LastfmClient."""
+    return flatten_alias_groups(load_alias_groups(path))
 
 
 def load_banlist(path: Optional[str]) -> frozenset[str]:
@@ -216,6 +297,12 @@ class LastfmClient:
                 count = 0
             canonical = canonicalize_tag_name(name)
             if not canonical:
+                continue
+            # Бан/блоклист проверяется и ДО подстановки алиаса, и после: иначе
+            # алиас на забаненное имя молча обходил бы бан (tag 'trumpet' в
+            # бан-листе + алиас trumpet -> jazz давал бы 'jazz'). CLI не даёт
+            # создать такой конфликт, но файл могли поправить руками.
+            if canonical in TAG_BLOCKLIST or canonical in self._banned:
                 continue
             canonical = self._aliases.get(canonical, canonical)
             if canonical in TAG_BLOCKLIST or canonical in self._banned:

@@ -12,9 +12,10 @@ from .config import ConfigError, load_config
 from .lastfm import (
     LastfmClient,
     canonicalize_tag_name,
-    load_aliases,
+    flatten_alias_groups,
+    load_alias_groups,
     load_banlist,
-    save_aliases,
+    save_alias_groups,
     save_banlist,
 )
 from .scanner import run_once, scan_artist, wipe_all_genre_tags
@@ -108,13 +109,23 @@ def main() -> None:
     parser.add_argument(
         "--add-alias",
         nargs=2,
-        metavar=("FROM", "TO"),
+        metavar=("VARIANT", "MAIN"),
         help=(
-            "Добавить синоним жанра в GENRE_ALIASES_FILE: теги, канонизированные "
-            "к FROM, будут заменяться на TO при следующем пересчёте (например "
-            "--add-alias hiphop 'hip hop'). Ничего не сканирует — только правит "
-            "файл; перезапись ID3 у уже обработанных артистов произойдёт на "
+            "Добавить синоним жанра в GENRE_ALIASES_FILE: тег VARIANT будет "
+            "заменяться на MAIN при следующем пересчёте (например --add-alias "
+            "hiphop 'hip hop'). В файле хранится группами: MAIN -> список "
+            "своих вариантов. Ничего не сканирует — только правит файл; "
+            "перезапись ID3 у уже обработанных артистов произойдёт на "
             "следующем обычном запуске."
+        ),
+    )
+    parser.add_argument(
+        "--remove-alias",
+        metavar="VARIANT",
+        help=(
+            "Убрать вариант написания из GENRE_ALIASES_FILE (обратная операция "
+            "к --add-alias). Группа удаляется целиком, если в ней не осталось "
+            "вариантов. Как и --add-alias, только правит файл."
         ),
     )
     parser.add_argument(
@@ -198,31 +209,115 @@ def main() -> None:
         sys.exit(1)
 
     if args.add_alias:
-        from_tag, to_tag = args.add_alias
-        canonical_from = canonicalize_tag_name(from_tag)
-        canonical_to = canonicalize_tag_name(to_tag)
-        if not canonical_from or not canonical_to:
+        variant_raw, main_raw = args.add_alias
+        variant = canonicalize_tag_name(variant_raw)
+        main_tag = canonicalize_tag_name(main_raw)
+        if not variant or not main_tag:
             log.error("Both --add-alias arguments must be non-empty")
             sys.exit(1)
-        aliases = load_aliases(config.genre_aliases_path)
-        aliases[canonical_from] = canonical_to
-        save_aliases(config.genre_aliases_path, aliases)
+        if variant == main_tag:
+            log.error("--add-alias arguments must differ (%r canonicalizes to itself)", variant)
+            sys.exit(1)
+
+        groups = load_alias_groups(config.genre_aliases_path)
+
+        # Алиас на забаненное имя молча обходил бы бан (см. _filter_tags) —
+        # ловим конфликт здесь, где его видно, а не в рантайме на каждом теге.
+        banned = load_banlist(config.genre_banlist_path)
+        if variant in banned:
+            log.error(
+                "%r is in the genre banlist (%s) — remove it from there first, "
+                "otherwise the ban wins and this alias would never apply",
+                variant,
+                config.genre_banlist_path,
+            )
+            sys.exit(1)
+        if main_tag in banned:
+            log.error(
+                "%r is in the genre banlist (%s) — aliasing to a banned genre would "
+                "just drop the tag; unban it first or pick another target",
+                main_tag,
+                config.genre_banlist_path,
+            )
+            sys.exit(1)
+
+        # Цепочки (a -> b, где b сам вариант c) разрешаются при загрузке, но
+        # результат почти никогда не совпадает с ожиданием — не даём их создать.
+        if variant in groups:
+            log.error(
+                "%r is already a main genre with variant(s) %s — adding it as a variant "
+                "of %r would create a chain; merge those variants into %r instead",
+                variant,
+                groups[variant],
+                main_tag,
+                main_tag,
+            )
+            sys.exit(1)
+        owner_of_main = next((c for c, v in groups.items() if main_tag in v), None)
+        if owner_of_main is not None:
+            log.error(
+                "%r is itself a variant of %r — pointing %r at it would create a chain; "
+                "use %r as the target instead",
+                main_tag,
+                owner_of_main,
+                variant,
+                owner_of_main,
+            )
+            sys.exit(1)
+
+        previous_owner = next((c for c, v in groups.items() if variant in v), None)
+        if previous_owner == main_tag:
+            log.info("Genre alias %r -> %r already present, nothing to do", variant, main_tag)
+            return
+        if previous_owner is not None:
+            log.warning("Moving variant %r from %r to %r", variant, previous_owner, main_tag)
+            groups[previous_owner] = [v for v in groups[previous_owner] if v != variant]
+            if not groups[previous_owner]:
+                del groups[previous_owner]
+
+        groups.setdefault(main_tag, []).append(variant)
+        save_alias_groups(config.genre_aliases_path, groups)
         log.info(
-            "Added genre alias %r -> %r to %s (%d total)",
-            canonical_from,
-            canonical_to,
+            "Added genre alias %r -> %r to %s (%d main genre(s), %d variant(s) total)",
+            variant,
+            main_tag,
             config.genre_aliases_path,
-            len(aliases),
+            len(groups),
+            sum(len(v) for v in groups.values()),
+        )
+        return
+
+    if args.remove_alias:
+        variant = canonicalize_tag_name(args.remove_alias)
+        if not variant:
+            log.error("--remove-alias argument must be non-empty")
+            sys.exit(1)
+        groups = load_alias_groups(config.genre_aliases_path)
+        owner = next((c for c, v in groups.items() if variant in v), None)
+        if owner is None:
+            log.error("No such alias variant: %r (see --list-aliases)", variant)
+            sys.exit(1)
+        groups[owner] = [v for v in groups[owner] if v != variant]
+        if not groups[owner]:
+            del groups[owner]
+        save_alias_groups(config.genre_aliases_path, groups)
+        log.info(
+            "Removed genre alias %r -> %r from %s (%d main genre(s), %d variant(s) left)",
+            variant,
+            owner,
+            config.genre_aliases_path,
+            len(groups),
+            sum(len(v) for v in groups.values()),
         )
         return
 
     if args.list_aliases:
-        aliases = load_aliases(config.genre_aliases_path)
-        if not aliases:
+        groups = load_alias_groups(config.genre_aliases_path)
+        if not groups:
             print(f"Словарь синонимов пуст ({config.genre_aliases_path})")
         else:
-            for from_tag, to_tag in sorted(aliases.items()):
-                print(f"{from_tag} -> {to_tag}")
+            for main_tag, variants in sorted(groups.items()):
+                print(f"{main_tag} <- {', '.join(variants)}")
         return
 
     if args.ban_genre:
@@ -314,8 +409,25 @@ def main() -> None:
         log.error("Cannot open cache database at %s: %s", config.db_path, exc)
         sys.exit(1)
 
-    aliases = load_aliases(config.genre_aliases_path)
+    alias_groups = load_alias_groups(config.genre_aliases_path)
+    aliases = flatten_alias_groups(alias_groups)
     banned = load_banlist(config.genre_banlist_path)
+    # CLI не даёт создать пересечение алиасов с бан-листом, но файлы могли
+    # поправить руками — сообщаем один раз за запуск, а не на каждом теге.
+    # В рантайме бан выигрывает (см. _filter_tags), т.е. алиас просто не
+    # сработает, и без этого предупреждения это выглядело бы необъяснимо.
+    alias_ban_conflicts = sorted(
+        (set(aliases) | set(aliases.values())) & set(banned)
+    )
+    if alias_ban_conflicts:
+        log.warning(
+            "These genre(s) appear both in the alias dictionary and in the banlist: %s. "
+            "The ban wins, so those aliases will not apply — remove them from %s or "
+            "from %s to resolve the conflict.",
+            ", ".join(repr(name) for name in alias_ban_conflicts),
+            config.genre_banlist_path,
+            config.genre_aliases_path,
+        )
     lastfm = LastfmClient(
         config.lastfm_api_key, config.min_tag_count, config.max_genres, aliases=aliases, banned=banned
     )
