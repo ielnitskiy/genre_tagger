@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator, Optional
 
@@ -58,6 +59,25 @@ class Cache:
         genres = json.loads(genre_json) if genre_json is not None else None
         albums = json.loads(albums_json)
         return genres, albums
+
+    def is_stale(self, artist: str, ttl_days: int) -> bool:
+        """True, если с processed_at прошло не меньше ttl_days — сигнал scanner'у
+        перепроверить жанр у уже обработанного артиста (см. GENRE_TTL_DAYS)."""
+        cur = self._conn.execute(
+            "SELECT processed_at FROM artist_genre WHERE artist = ?", (artist,)
+        )
+        row = cur.fetchone()
+        if row is None:
+            return False
+        processed_at = datetime.fromisoformat(row[0])
+        if processed_at.tzinfo is None:
+            processed_at = processed_at.replace(tzinfo=timezone.utc)
+        age = datetime.now(timezone.utc) - processed_at
+        return age.days >= ttl_days
+
+    def list_artists(self) -> list[str]:
+        cur = self._conn.execute("SELECT artist FROM artist_genre")
+        return [row[0] for row in cur.fetchall()]
 
     def is_force_rewrite(self, artist: str) -> bool:
         cur = self._conn.execute(

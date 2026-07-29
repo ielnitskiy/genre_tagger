@@ -90,6 +90,7 @@ def scan_artist(
     cache: Cache,
     lastfm: LastfmClient,
     force_scan: bool = False,
+    genre_ttl_days: Optional[int] = None,
 ) -> None:
     artist_path = os.path.join(music_dir, artist_name)
     album_dirs = _list_album_dirs(artist_path)
@@ -106,6 +107,25 @@ def scan_artist(
         genres, cached_albums = cache.get(artist_name)
     else:
         genres, cached_albums = None, {}
+
+    # GENRE_TTL_DAYS: раз в ttl_days перепроверяем жанр уже обработанного
+    # артиста у Last.fm — вдруг теги там поменялись. Вызывается до цикла по
+    # альбомам намеренно: если жанр реально изменился, force=True должен
+    # обойти mtime-gate ниже и на этом же проходе перетегировать уже
+    # существующие альбомы новым жанром, а не только новые файлы.
+    revalidate = was_done and genre_ttl_days is not None and cache.is_stale(artist_name, genre_ttl_days)
+    raw_json = None
+    if revalidate:
+        log.info(
+            "Genre cache for %r is older than %d day(s), revalidating via Last.fm",
+            artist_name,
+            genre_ttl_days,
+        )
+        new_genres, raw_json = lastfm.resolve_genres(artist_name)
+        if new_genres != genres:
+            log.info("Genres for %r changed: %s -> %s", artist_name, genres, new_genres)
+            force = True
+        genres = new_genres
 
     current_albums: dict[str, dict] = {}
     new_files_by_album: dict[str, set[str]] = {}
@@ -141,7 +161,13 @@ def scan_artist(
                 new_files_by_album[album_name] = files_in_album - previously_known
 
     if was_done:
-        if not changed:
+        if revalidate:
+            # current_albums на этом этапе уже полный и эквивалентен
+            # cached_albums там, где реальных изменений на диске не было
+            # (см. ветку раннего continue выше) — можно сохранять как есть.
+            timestamp = datetime.now(timezone.utc).isoformat()
+            cache.mark_done(artist_name, genres, current_albums, raw_json, timestamp)
+        elif not changed:
             return
     else:
         log.info("New artist %r, resolving genres via Last.fm", artist_name)
@@ -184,7 +210,23 @@ def run_once(
     log.info("Starting scan pass over %d artist dir(s)", len(artist_names))
     for artist_name in artist_names:
         try:
-            scan_artist(artist_name, config.music_dir, cache, lastfm, force_scan=force_scan)
+            scan_artist(
+                artist_name,
+                config.music_dir,
+                cache,
+                lastfm,
+                force_scan=force_scan,
+                genre_ttl_days=config.genre_ttl_days,
+            )
         except Exception:
             log.exception("Unexpected error while scanning artist %r, continuing", artist_name)
+
+    orphaned = set(cache.list_artists()) - set(artist_names) - config.skip_dirs
+    for artist_name in sorted(orphaned):
+        log.warning(
+            "Cached artist %r has no directory under %s anymore (orphaned cache entry, not removed automatically)",
+            artist_name,
+            config.music_dir,
+        )
+
     log.info("Scan pass finished")

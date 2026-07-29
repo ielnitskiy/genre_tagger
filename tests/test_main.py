@@ -52,6 +52,7 @@ def test_daemon_loop_stops_after_current_scan_pass_on_sigterm(tmp_path, monkeypa
         scan_interval_seconds=10_000,  # заведомо больше, чем должен реально проспать тест
         min_tag_count=1,
         max_genres=1,
+        genre_ttl_days=180,
         skip_dirs=frozenset(),
     )
     (tmp_path / "music").mkdir()

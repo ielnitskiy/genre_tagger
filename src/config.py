@@ -14,6 +14,7 @@ class Config:
     scan_interval_seconds: int
     min_tag_count: int
     max_genres: int
+    genre_ttl_days: int
     skip_dirs: frozenset[str]
 
     @property
@@ -55,5 +56,6 @@ def load_config() -> Config:
         scan_interval_seconds=_int_env("SCAN_INTERVAL_SECONDS", "86400"),
         min_tag_count=_int_env("MIN_TAG_COUNT", "10"),
         max_genres=_int_env("MAX_GENRES", "3"),
+        genre_ttl_days=_int_env("GENRE_TTL_DAYS", "180"),
         skip_dirs=skip_dirs,
     )

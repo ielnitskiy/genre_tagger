@@ -22,6 +22,14 @@ class FakeLastfm:
         return self.genres, '{"fake":"raw"}'
 
 
+def _backdate(cache, artist, days):
+    from datetime import datetime, timedelta, timezone
+
+    genres, albums = cache.get(artist)
+    old_timestamp = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    cache.mark_done(artist, genres, albums, '{"fake":"raw"}', old_timestamp)
+
+
 @pytest.fixture
 def cache(tmp_path):
     c = Cache(str(tmp_path / "genres.db"))
@@ -189,6 +197,7 @@ def test_run_once_continues_after_unexpected_error_in_one_artist(tmp_path, cache
         scan_interval_seconds=1,
         min_tag_count=1,
         max_genres=1,
+        genre_ttl_days=180,
         skip_dirs=frozenset(),
     )
 
@@ -196,3 +205,88 @@ def test_run_once_continues_after_unexpected_error_in_one_artist(tmp_path, cache
 
     assert cache.is_done("ArtistA") is False
     assert cache.is_done("ArtistB") is True
+
+
+def test_fresh_cache_does_not_requery_lastfm_even_with_ttl_set(tmp_path, cache):
+    music_dir = tmp_path / "music"
+    _make_album(music_dir, "Artist", "Album", ["a.mp3"])
+    lastfm = FakeLastfm(genres=["rock"])
+    scanner.scan_artist("Artist", str(music_dir), cache, lastfm, genre_ttl_days=180)
+
+    scanner.scan_artist("Artist", str(music_dir), cache, lastfm, genre_ttl_days=180)
+
+    assert lastfm.calls == ["Artist"]  # кэш свежий, TTL не истёк
+
+
+def test_stale_cache_requeries_lastfm_and_refreshes_timestamp(tmp_path, cache):
+    music_dir = tmp_path / "music"
+    _make_album(music_dir, "Artist", "Album", ["a.mp3"])
+    lastfm = FakeLastfm(genres=["rock"])
+    scanner.scan_artist("Artist", str(music_dir), cache, lastfm, genre_ttl_days=180)
+    _backdate(cache, "Artist", days=200)
+    assert cache.is_stale("Artist", ttl_days=180) is True
+
+    scanner.scan_artist("Artist", str(music_dir), cache, lastfm, genre_ttl_days=180)
+
+    assert lastfm.calls == ["Artist", "Artist"]
+    assert cache.is_stale("Artist", ttl_days=180) is False  # processed_at обновился
+
+
+def test_stale_cache_with_changed_genre_retags_existing_files(tmp_path, cache):
+    music_dir = tmp_path / "music"
+    album_path = _make_album(music_dir, "Artist", "Album", ["a.mp3"])
+    lastfm = FakeLastfm(genres=["rock"])
+    scanner.scan_artist("Artist", str(music_dir), cache, lastfm, genre_ttl_days=180)
+    assert EasyID3(str(album_path / "a.mp3"))["genre"] == ["rock"]
+
+    _backdate(cache, "Artist", days=200)
+    lastfm.genres = ["jazz"]
+
+    scanner.scan_artist("Artist", str(music_dir), cache, lastfm, genre_ttl_days=180)
+
+    assert EasyID3(str(album_path / "a.mp3"))["genre"] == ["jazz"]
+    genres, _albums = cache.get("Artist")
+    assert genres == ["jazz"]
+
+
+def test_stale_cache_with_unchanged_genre_does_not_error_and_keeps_genre(tmp_path, cache):
+    music_dir = tmp_path / "music"
+    album_path = _make_album(music_dir, "Artist", "Album", ["a.mp3"])
+    lastfm = FakeLastfm(genres=["rock"])
+    scanner.scan_artist("Artist", str(music_dir), cache, lastfm, genre_ttl_days=180)
+    _backdate(cache, "Artist", days=200)
+
+    scanner.scan_artist("Artist", str(music_dir), cache, lastfm, genre_ttl_days=180)
+
+    assert EasyID3(str(album_path / "a.mp3"))["genre"] == ["rock"]
+
+
+def test_run_once_logs_warning_for_orphaned_cache_entry(tmp_path, cache, caplog):
+    music_dir = tmp_path / "music"
+    _make_album(music_dir, "ArtistA", "Album", ["a.mp3"])
+    _make_album(music_dir, "ArtistB", "Album", ["b.mp3"])
+    lastfm = FakeLastfm(genres=["rock"])
+
+    from src.config import Config
+
+    config = Config(
+        music_dir=str(music_dir),
+        db_path="unused",
+        lastfm_api_key="key",
+        scan_interval_seconds=1,
+        min_tag_count=1,
+        max_genres=1,
+        genre_ttl_days=180,
+        skip_dirs=frozenset(),
+    )
+    scanner.run_once(config, cache, lastfm)
+
+    import shutil
+
+    shutil.rmtree(music_dir / "ArtistB")
+
+    with caplog.at_level("WARNING"):
+        scanner.run_once(config, cache, lastfm)
+
+    assert any("ArtistB" in record.message for record in caplog.records)
+    assert cache.is_done("ArtistB") is True  # запись не удаляется автоматически

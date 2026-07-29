@@ -1,4 +1,5 @@
 import sqlite3
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -98,3 +99,25 @@ def test_corrupt_db_file_raises_database_error(tmp_path):
     db_path.write_bytes(b"this is not a sqlite database")
     with pytest.raises(sqlite3.DatabaseError):
         Cache(str(db_path))
+
+
+def test_is_stale_false_for_unknown_artist(cache):
+    assert cache.is_stale("Nobody", ttl_days=1) is False
+
+
+def test_is_stale_false_when_within_ttl(cache):
+    timestamp = datetime.now(timezone.utc).isoformat()
+    cache.mark_done("Artist", ["rock"], {}, None, timestamp)
+    assert cache.is_stale("Artist", ttl_days=180) is False
+
+
+def test_is_stale_true_when_past_ttl(cache):
+    old_timestamp = (datetime.now(timezone.utc) - timedelta(days=200)).isoformat()
+    cache.mark_done("Artist", ["rock"], {}, None, old_timestamp)
+    assert cache.is_stale("Artist", ttl_days=180) is True
+
+
+def test_list_artists_returns_all_known_artists(cache):
+    cache.mark_done("Artist A", ["rock"], {}, None, "t")
+    cache.mark_done("Artist B", None, {}, None, "t")
+    assert sorted(cache.list_artists()) == ["Artist A", "Artist B"]
