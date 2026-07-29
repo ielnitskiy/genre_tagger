@@ -29,7 +29,12 @@ CREATE TABLE IF NOT EXISTS force_rewrite (
 class Cache:
     def __init__(self, db_path: str):
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(db_path)
+        # busy_timeout выше дефолтных 5с и WAL — чтобы конкурентный запуск
+        # второго инстанса (например, ручной прогон поверх cron) ждал
+        # освобождения блокировки вместо немедленного "database is locked",
+        # и чтобы читатели не блокировались на время записи.
+        self._conn = sqlite3.connect(db_path, timeout=30.0)
+        self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(SCHEMA)
         self._conn.commit()
 

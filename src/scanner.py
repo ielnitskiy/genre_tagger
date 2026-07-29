@@ -4,6 +4,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from mutagen import MutagenError
+
 from . import tagger
 from .cache import Cache
 from .config import Config
@@ -70,7 +72,7 @@ def _tag_new_files(
         try:
             tagger.write_genre(full_path, genres, force=force)
             tagged += 1
-        except OSError as exc:
+        except (MutagenError, OSError) as exc:
             log.warning("Failed to tag %s, will retry next scan: %s", full_path, exc)
             failed_files.add(rel_path)
     log.info(

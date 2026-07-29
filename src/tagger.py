@@ -24,11 +24,12 @@ def has_genre(path: str) -> bool:
 def write_genre(path: str, genres: list[str], force: bool = False) -> None:
     """Пишет жанр(ы) в TCON. Если force=False и тег уже есть — не перезаписывает
     (safety-belt). force=True используется для --reset-artist и пересчёта
-    фильтрации из raw_response, где перезапись как раз нужна."""
-    try:
-        if not force and has_genre(path):
-            return
-    except (MutagenError, OSError):
+    фильтрации из raw_response, где перезапись как раз нужна.
+
+    Ошибки чтения/записи ID3 (MutagenError/OSError) намеренно не перехватываются
+    здесь — пробрасываются вызывающему коду (scanner._tag_new_files), чтобы файл
+    попал в failed_files и был повторён на следующем скане, а не пропущен молча."""
+    if not force and has_genre(path):
         return
 
     try:

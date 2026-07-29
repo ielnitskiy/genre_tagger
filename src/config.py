@@ -2,6 +2,10 @@ import os
 from dataclasses import dataclass
 
 
+class ConfigError(Exception):
+    """Некорректная или отсутствующая конфигурация окружения."""
+
+
 @dataclass(frozen=True)
 class Config:
     music_dir: str
@@ -22,8 +26,22 @@ class Config:
 DEFAULT_SKIP_DIRS = frozenset({"download-errors"})
 
 
+def _int_env(name: str, default: str) -> int:
+    raw = os.environ.get(name, default)
+    try:
+        return int(raw)
+    except ValueError:
+        raise ConfigError(f"{name} must be an integer, got {raw!r}") from None
+
+
 def load_config() -> Config:
-    api_key = os.environ["LASTFM_API_KEY"]
+    try:
+        api_key = os.environ["LASTFM_API_KEY"]
+    except KeyError:
+        raise ConfigError("LASTFM_API_KEY environment variable is required") from None
+    if not api_key.strip():
+        raise ConfigError("LASTFM_API_KEY environment variable must not be empty")
+
     skip_dirs_raw = os.environ.get("SKIP_DIRS", "")
     skip_dirs = (
         frozenset(x.strip() for x in skip_dirs_raw.split(",") if x.strip())
@@ -34,8 +52,8 @@ def load_config() -> Config:
         music_dir=os.environ.get("MUSIC_DIR", "/music"),
         db_path=os.environ.get("DB_PATH", "/data/genres.db"),
         lastfm_api_key=api_key,
-        scan_interval_seconds=int(os.environ.get("SCAN_INTERVAL_SECONDS", "86400")),
-        min_tag_count=int(os.environ.get("MIN_TAG_COUNT", "10")),
-        max_genres=int(os.environ.get("MAX_GENRES", "3")),
+        scan_interval_seconds=_int_env("SCAN_INTERVAL_SECONDS", "86400"),
+        min_tag_count=_int_env("MIN_TAG_COUNT", "10"),
+        max_genres=_int_env("MAX_GENRES", "3"),
         skip_dirs=skip_dirs,
     )

@@ -1,9 +1,11 @@
 import argparse
 import logging
+import sqlite3
+import sys
 import time
 
 from .cache import Cache
-from .config import load_config
+from .config import ConfigError, load_config
 from .lastfm import LastfmClient
 from .scanner import run_once
 
@@ -52,8 +54,18 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    config = load_config()
-    cache = Cache(config.db_path)
+    try:
+        config = load_config()
+    except ConfigError as exc:
+        log.error("Invalid configuration: %s", exc)
+        sys.exit(1)
+
+    try:
+        cache = Cache(config.db_path)
+    except sqlite3.DatabaseError as exc:
+        log.error("Cannot open cache database at %s: %s", config.db_path, exc)
+        sys.exit(1)
+
     lastfm = LastfmClient(config.lastfm_api_key, config.min_tag_count, config.max_genres)
 
     if args.reset_artist:
