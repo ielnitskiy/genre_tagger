@@ -211,7 +211,7 @@ def main() -> None:
                 "# оставить, затем примените отредактированный список:\n"
                 f"#   docker compose run --rm genre-tagger --ban-genre-file {args.suggest_bans_file}\n\n"
             )
-            for tag, count in sorted(shown_final.items(), key=lambda item: (item[1], item[0])):
+            for tag, count in sorted(shown_final.items(), key=lambda item: (-item[1], item[0])):
                 f.write(f"{tag}  # {count} track(s), {artist_counts.get(tag, 0)} artist(s)\n")
         print(
             f"\n=== Записано {len(shown_final)} кандидат(ов) в {args.suggest_bans_file} "
