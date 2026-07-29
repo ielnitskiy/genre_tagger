@@ -135,6 +135,17 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--ban-genre-file",
+        metavar="PATH",
+        help=(
+            "Применить отредактированный список кандидатов из scripts/dump_tags.py "
+            "--suggest-bans-file: по одному жанру на строку, '#' и всё после него "
+            "на строке — комментарий, пустые строки игнорируются. Все жанры из "
+            "файла добавляются в бан-лист (мержится с уже существующим), как и "
+            "--ban-genre. Ничего не сканирует само по себе."
+        ),
+    )
+    parser.add_argument(
         "--list-banned-genres", action="store_true", help="Показать текущий бан-лист жанров и выйти"
     )
     parser.add_argument(
@@ -225,6 +236,34 @@ def main() -> None:
         log.info(
             "Added %s to genre banlist %s (%d total)",
             ", ".join(repr(c) for c in canonicals),
+            config.genre_banlist_path,
+            len(banned),
+        )
+        return
+
+    if args.ban_genre_file:
+        if not os.path.isfile(args.ban_genre_file):
+            log.error("No such file: %s", args.ban_genre_file)
+            sys.exit(1)
+        canonicals = set()
+        with open(args.ban_genre_file, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.split("#", 1)[0].strip()
+                if not line:
+                    continue
+                canonical = canonicalize_tag_name(line)
+                if canonical:
+                    canonicals.add(canonical)
+        if not canonicals:
+            log.warning("No genres found in %s, banlist not changed", args.ban_genre_file)
+            return
+        banned = set(load_banlist(config.genre_banlist_path))
+        banned.update(canonicals)
+        save_banlist(config.genre_banlist_path, frozenset(banned))
+        log.info(
+            "Added %d genre(s) from %s to genre banlist %s (%d total)",
+            len(canonicals),
+            args.ban_genre_file,
             config.genre_banlist_path,
             len(banned),
         )

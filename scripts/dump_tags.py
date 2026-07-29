@@ -150,7 +150,21 @@ def main() -> None:
     parser.add_argument(
         "--banlist-path",
         default=os.environ.get("GENRE_BANLIST_FILE", "/data/genre_banlist.json"),
-        help="Путь к файлу бан-листа для --ban-below (по умолчанию $GENRE_BANLIST_FILE)",
+        help="Путь к файлу бан-листа для --ban-below/фильтрации уже забаненных (по умолчанию $GENRE_BANLIST_FILE)",
+    )
+    parser.add_argument(
+        "--suggest-bans-file",
+        metavar="PATH",
+        help=(
+            "Вместо (или вместе с) немедленного --ban-below записать кандидатов "
+            "в текстовый файл для ручного review: по одному жанру на строку, с "
+            "комментарием '# N track(s), M artist(s)'. Удалите строки с "
+            "жанрами, которые хотите оставить, затем примените отредактированный "
+            "список одной командой: "
+            "docker compose run --rm genre-tagger --ban-genre-file PATH. "
+            "Уже присутствующие в бан-листе жанры в файл не попадают (не "
+            "предлагаются повторно)."
+        ),
     )
     args = parser.parse_args()
 
@@ -166,18 +180,34 @@ def main() -> None:
     finally:
         cache.close()
 
+    already_banned = load_banlist(args.banlist_path)
+
     print(f"=== {len(track_counts)} уникальных жанров реально в ID3 (по трекам) ===")
     print("(сортировка по возрастанию — кандидаты на --ban-genre/--add-alias сверху)\n")
     shown_final = {
         tag: count
         for tag, count in track_counts.items()
-        if args.max_tracks is None or count <= args.max_tracks
+        if tag not in already_banned and (args.max_tracks is None or count <= args.max_tracks)
     }
     if not shown_final:
         print("(пусто — либо кэш пуст, либо ни один жанр не подходит под --max-tracks)")
     else:
         for tag, count in sorted(shown_final.items(), key=lambda item: (item[1], item[0])):
             print(f"{count:>6} track(s) ({artist_counts.get(tag, 0)} artist(s))  {tag}")
+
+    if args.suggest_bans_file:
+        with open(args.suggest_bans_file, "w", encoding="utf-8") as f:
+            f.write(
+                "# Кандидаты на бан жанров. Удалите строки с жанрами, которые хотите\n"
+                "# оставить, затем примените отредактированный список:\n"
+                f"#   docker compose run --rm genre-tagger --ban-genre-file {args.suggest_bans_file}\n\n"
+            )
+            for tag, count in sorted(shown_final.items(), key=lambda item: (item[1], item[0])):
+                f.write(f"{tag}  # {count} track(s), {artist_counts.get(tag, 0)} artist(s)\n")
+        print(
+            f"\n=== Записано {len(shown_final)} кандидат(ов) в {args.suggest_bans_file} "
+            "для ручного review ==="
+        )
 
     if args.ban_below is not None:
         to_ban = {tag for tag, count in track_counts.items() if count <= args.ban_below}

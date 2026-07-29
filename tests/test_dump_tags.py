@@ -163,6 +163,73 @@ def test_main_ban_below_merges_with_existing_banlist(tmp_path, monkeypatch):
     assert load_banlist(str(banlist_path)) == {"already banned", "trumpet"}
 
 
+def test_main_suggest_bans_file_writes_editable_candidates(tmp_path, monkeypatch):
+    db_path = tmp_path / "genres.db"
+    suggest_path = tmp_path / "candidates.txt"
+
+    cache = Cache(str(db_path))
+    cache.mark_done("Popular Artist", ["rock"], _albums(50), None, "t")
+    cache.mark_done("Obscure Artist", ["trumpet"], _albums(2), None, "t")
+    cache.close()
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "dump_tags.py",
+            "--db-path",
+            str(db_path),
+            "--max-tracks",
+            "10",
+            "--suggest-bans-file",
+            str(suggest_path),
+        ],
+    )
+
+    dump_tags.main()
+
+    content = suggest_path.read_text(encoding="utf-8")
+    assert "trumpet" in content
+    assert "rock" not in content  # 50 треков, не подходит под --max-tracks 10
+    assert "2 track(s), 1 artist(s)" in content
+
+
+def test_main_suggest_bans_file_excludes_already_banned_genres(tmp_path, monkeypatch):
+    from src.lastfm import save_banlist
+
+    db_path = tmp_path / "genres.db"
+    banlist_path = tmp_path / "banlist.json"
+    suggest_path = tmp_path / "candidates.txt"
+    save_banlist(str(banlist_path), frozenset({"trumpet"}))
+
+    cache = Cache(str(db_path))
+    # trumpet ещё не пересчитан (--once не запускали), поэтому формально всё ещё
+    # в track_counts — но раз он уже в бан-листе, повторно предлагать его не надо.
+    cache.mark_done("Obscure Artist", ["trumpet"], _albums(2), None, "t")
+    cache.mark_done("Another Artist", ["icelandic"], _albums(3), None, "t")
+    cache.close()
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "dump_tags.py",
+            "--db-path",
+            str(db_path),
+            "--max-tracks",
+            "10",
+            "--banlist-path",
+            str(banlist_path),
+            "--suggest-bans-file",
+            str(suggest_path),
+        ],
+    )
+
+    dump_tags.main()
+
+    content = suggest_path.read_text(encoding="utf-8")
+    assert "icelandic" in content
+    assert "trumpet" not in content
+
+
 def test_find_similar_clusters_groups_tags_missing_a_separator():
     tags = ["hip hop", "hiphop", "rock"]
     clusters = dump_tags.find_similar_clusters(tags, cutoff=0.8)

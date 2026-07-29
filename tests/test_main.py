@@ -278,6 +278,89 @@ def test_banlist_fingerprint_changes_when_banlist_changes():
     assert fp_a != fp_b
 
 
+def test_ban_genre_file_applies_edited_candidate_list(tmp_path, monkeypatch):
+    banlist_path = tmp_path / "banlist.json"
+    candidates_path = tmp_path / "candidates.txt"
+    candidates_path.write_text(
+        "# Кандидаты на бан\n"
+        "\n"
+        "trumpet  # 2 track(s), 1 artist(s)\n"
+        "icelandic  # 3 track(s), 1 artist(s)\n",
+        encoding="utf-8",
+    )
+    config = _config_with_banlist_path(tmp_path, banlist_path)
+    monkeypatch.setattr(main_module, "load_config", lambda: config)
+    monkeypatch.setattr("sys.argv", ["genre-tagger", "--ban-genre-file", str(candidates_path)])
+
+    main_module.main()
+
+    from src.lastfm import load_banlist
+
+    assert load_banlist(str(banlist_path)) == {"trumpet", "icelandic"}
+
+
+def test_ban_genre_file_respects_manually_removed_lines(tmp_path, monkeypatch):
+    banlist_path = tmp_path / "banlist.json"
+    candidates_path = tmp_path / "candidates.txt"
+    # Пользователь вручную удалил строку с icelandic, оставив только trumpet.
+    candidates_path.write_text("trumpet  # 2 track(s), 1 artist(s)\n", encoding="utf-8")
+    config = _config_with_banlist_path(tmp_path, banlist_path)
+    monkeypatch.setattr(main_module, "load_config", lambda: config)
+    monkeypatch.setattr("sys.argv", ["genre-tagger", "--ban-genre-file", str(candidates_path)])
+
+    main_module.main()
+
+    from src.lastfm import load_banlist
+
+    assert load_banlist(str(banlist_path)) == {"trumpet"}
+
+
+def test_ban_genre_file_merges_with_existing_banlist(tmp_path, monkeypatch):
+    from src.lastfm import save_banlist
+
+    banlist_path = tmp_path / "banlist.json"
+    save_banlist(str(banlist_path), frozenset({"already banned"}))
+    candidates_path = tmp_path / "candidates.txt"
+    candidates_path.write_text("trumpet\n", encoding="utf-8")
+    config = _config_with_banlist_path(tmp_path, banlist_path)
+    monkeypatch.setattr(main_module, "load_config", lambda: config)
+    monkeypatch.setattr("sys.argv", ["genre-tagger", "--ban-genre-file", str(candidates_path)])
+
+    main_module.main()
+
+    from src.lastfm import load_banlist
+
+    assert load_banlist(str(banlist_path)) == {"already banned", "trumpet"}
+
+
+def test_ban_genre_file_rejects_missing_file(tmp_path, monkeypatch):
+    banlist_path = tmp_path / "banlist.json"
+    config = _config_with_banlist_path(tmp_path, banlist_path)
+    monkeypatch.setattr(main_module, "load_config", lambda: config)
+    monkeypatch.setattr(
+        "sys.argv", ["genre-tagger", "--ban-genre-file", str(tmp_path / "missing.txt")]
+    )
+
+    with pytest.raises(SystemExit):
+        main_module.main()
+
+    assert not banlist_path.exists()
+
+
+def test_ban_genre_file_warns_when_only_comments_and_blank_lines(tmp_path, monkeypatch, caplog):
+    banlist_path = tmp_path / "banlist.json"
+    candidates_path = tmp_path / "candidates.txt"
+    candidates_path.write_text("# всё удалено\n\n", encoding="utf-8")
+    config = _config_with_banlist_path(tmp_path, banlist_path)
+    monkeypatch.setattr(main_module, "load_config", lambda: config)
+    monkeypatch.setattr("sys.argv", ["genre-tagger", "--ban-genre-file", str(candidates_path)])
+
+    with caplog.at_level("WARNING"):
+        main_module.main()
+
+    assert not banlist_path.exists()
+
+
 def _make_tagged_mp3(path):
     from mutagen.easyid3 import EasyID3
 
