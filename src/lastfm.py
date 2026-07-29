@@ -12,6 +12,7 @@ API_URL = "http://ws.audioscrobbler.com/2.0/"
 REQUEST_TIMEOUT_SECONDS = 10
 MAX_RETRIES = 2
 MIN_SECONDS_BETWEEN_REQUESTS = 1 / 5  # <=5 запросов/сек
+RATE_LIMIT_BACKOFF_SECONDS = 5.0  # используется, если Last.fm не прислал Retry-After
 
 TAG_BLOCKLIST = frozenset(
     {
@@ -67,11 +68,31 @@ class LastfmClient:
             except requests.RequestException as exc:
                 log.warning("Last.fm request failed for %r (attempt %d): %s", artist, attempt, exc)
                 continue
+            if resp.status_code == 429:
+                wait = self._retry_after_seconds(resp)
+                log.warning(
+                    "Last.fm 429 (rate limited) for %r (attempt %d), waiting %.1fs",
+                    artist,
+                    attempt,
+                    wait,
+                )
+                time.sleep(wait)
+                continue
             if resp.status_code >= 500:
                 log.warning("Last.fm 5xx for %r (attempt %d): %s", artist, attempt, resp.status_code)
                 continue
             return resp.text
         return None
+
+    @staticmethod
+    def _retry_after_seconds(resp: requests.Response) -> float:
+        retry_after = resp.headers.get("Retry-After")
+        if retry_after is not None:
+            try:
+                return max(float(retry_after), 0.0)
+            except ValueError:
+                pass
+        return RATE_LIMIT_BACKOFF_SECONDS
 
     def resolve_genres(self, artist: str) -> tuple[Optional[list[str]], Optional[str]]:
         """Возвращает (жанры или None, сырой JSON-ответ или None)."""
