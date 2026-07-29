@@ -1,0 +1,9 @@
+services:
+  genre-tagger:
+    build: .
+    container_name: genre-tagger
+    env_file: .env
+    volumes:
+      - /mnt/music:/music
+      - ./data:/data
+    restart: "no"

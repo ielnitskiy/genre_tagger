@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+
+# Environment secrets
+.env
+
+# Runtime SQLite state (bind-mounted via ./data)
+data/
+*.db
+
+# macOS
+.DS_Store
