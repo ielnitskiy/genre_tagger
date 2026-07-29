@@ -303,6 +303,58 @@ def test_main_only_clusters_suppresses_track_count_section(tmp_path, monkeypatch
     assert "реально в ID3" not in out
 
 
+def test_main_excludes_already_banned_tags_from_cluster_candidates(tmp_path, monkeypatch, capsys):
+    """--add-alias отказывается алиасить забаненный жанр (в рантайме бан
+    выигрывает), поэтому предлагать такие теги как кандидатов на объединение —
+    значит предлагать невыполнимое действие. Отсюда порядок работы: сначала
+    бан-проход, потом алиасы по тому, что осталось."""
+    db_path = tmp_path / "genres.db"
+    banlist_path = tmp_path / "banlist.json"
+    from src.lastfm import save_banlist
+
+    save_banlist(str(banlist_path), frozenset({"yandex music", "yander music"}))
+
+    cache = Cache(str(db_path))
+    cache.mark_done(
+        "Artist A",
+        ["metalcore"],
+        _albums(5),
+        _raw([("yandex music", 100), ("metalcore", 90)]),
+        "t",
+    )
+    cache.mark_done(
+        "Artist B",
+        ["mathcore"],
+        _albums(2),
+        _raw([("yander music", 100), ("mathcore", 90)]),
+        "t",
+    )
+    cache.close()
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "dump_tags.py",
+            "--db-path",
+            str(db_path),
+            "--banlist-path",
+            str(banlist_path),
+            "--cutoff",
+            "0.6",
+            "--only-clusters",
+        ],
+    )
+
+    dump_tags.main()
+
+    out = capsys.readouterr().out
+    assert "yandex music" not in out
+    assert "yander music" not in out
+    # незабаненная пара похожих написаний по-прежнему предлагается
+    assert "metalcore" in out
+    assert "mathcore" in out
+
+
 def test_main_rejects_no_clusters_together_with_only_clusters(tmp_path, monkeypatch):
     db_path = tmp_path / "genres.db"
     Cache(str(db_path)).close()
