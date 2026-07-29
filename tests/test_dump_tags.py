@@ -278,6 +278,44 @@ def test_main_no_clusters_suppresses_cluster_section(tmp_path, monkeypatch, caps
     assert "не найдено" not in out
 
 
+def test_main_only_clusters_suppresses_track_count_section(tmp_path, monkeypatch, capsys):
+    db_path = tmp_path / "genres.db"
+
+    cache = Cache(str(db_path))
+    cache.mark_done(
+        "Popular Artist", ["yandex music"], _albums(50), _raw([("yandex music", 100)]), "t"
+    )
+    cache.mark_done(
+        "Obscure Artist", ["yander music"], _albums(2), _raw([("yander music", 100)]), "t"
+    )
+    cache.close()
+
+    monkeypatch.setattr(
+        "sys.argv",
+        ["dump_tags.py", "--db-path", str(db_path), "--cutoff", "0.6", "--only-clusters"],
+    )
+
+    dump_tags.main()
+
+    out = capsys.readouterr().out
+    assert "объединение" in out
+    assert "track(s)" not in out  # секция по трекам не печатается вовсе
+    assert "реально в ID3" not in out
+
+
+def test_main_rejects_no_clusters_together_with_only_clusters(tmp_path, monkeypatch):
+    db_path = tmp_path / "genres.db"
+    Cache(str(db_path)).close()
+
+    monkeypatch.setattr(
+        "sys.argv",
+        ["dump_tags.py", "--db-path", str(db_path), "--no-clusters", "--only-clusters"],
+    )
+
+    with pytest.raises(SystemExit):
+        dump_tags.main()
+
+
 def test_main_max_tracks_keeps_cluster_with_at_least_one_rare_member(tmp_path, monkeypatch, capsys):
     db_path = tmp_path / "genres.db"
 

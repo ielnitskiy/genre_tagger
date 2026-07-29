@@ -147,6 +147,15 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--only-clusters",
+        action="store_true",
+        help=(
+            "Обратное к --no-clusters: показать ТОЛЬКО кандидатов на объединение "
+            "(для --add-alias), без секции по трекам. Удобно, когда разбираете "
+            "именно дубли написания и список жанров по трекам только мешает."
+        ),
+    )
+    parser.add_argument(
         "--max-tracks",
         type=int,
         default=None,
@@ -189,6 +198,10 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    if args.no_clusters and args.only_clusters:
+        print("--no-clusters и --only-clusters взаимоисключающи", file=sys.stderr)
+        sys.exit(1)
+
     if not os.path.exists(args.db_path):
         print(f"База {args.db_path!r} не найдена", file=sys.stderr)
         sys.exit(1)
@@ -203,18 +216,19 @@ def main() -> None:
 
     already_banned = load_banlist(args.banlist_path)
 
-    print(f"=== {len(track_counts)} уникальных жанров реально в ID3 (по трекам) ===")
-    print("(сортировка по убыванию — самые редкие/мусорные жанры внизу)\n")
     shown_final = {
         tag: count
         for tag, count in track_counts.items()
         if tag not in already_banned and (args.max_tracks is None or count <= args.max_tracks)
     }
-    if not shown_final:
-        print("(пусто — либо кэш пуст, либо ни один жанр не подходит под --max-tracks)")
-    else:
-        for tag, count in sorted(shown_final.items(), key=lambda item: (-item[1], item[0])):
-            print(f"{count:>6} track(s) ({artist_counts.get(tag, 0)} artist(s))  {tag}")
+    if not args.only_clusters:
+        print(f"=== {len(track_counts)} уникальных жанров реально в ID3 (по трекам) ===")
+        print("(сортировка по убыванию — самые редкие/мусорные жанры внизу)\n")
+        if not shown_final:
+            print("(пусто — либо кэш пуст, либо ни один жанр не подходит под --max-tracks)")
+        else:
+            for tag, count in sorted(shown_final.items(), key=lambda item: (-item[1], item[0])):
+                print(f"{count:>6} track(s) ({artist_counts.get(tag, 0)} artist(s))  {tag}")
 
     if args.suggest_bans_file:
         with open(args.suggest_bans_file, "w", encoding="utf-8") as f:
