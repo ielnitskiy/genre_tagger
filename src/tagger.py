@@ -38,3 +38,18 @@ def write_genre(path: str, genres: list[str], force: bool = False) -> None:
         tags = EasyID3()
     tags["genre"] = genres
     tags.save(path, v2_version=4)
+
+
+def remove_genre(path: str) -> bool:
+    """Удаляет тег genre (TCON), если он есть. Возвращает True, если файл был
+    изменён. Ошибки (MutagenError/OSError) пробрасываются вызывающему коду —
+    как и в write_genre, решение "пропустить/залогировать" не принимается здесь."""
+    try:
+        tags = EasyID3(path)
+    except ID3NoHeaderError:
+        return False
+    if "genre" not in tags:
+        return False
+    del tags["genre"]
+    tags.save(path, v2_version=4)
+    return True

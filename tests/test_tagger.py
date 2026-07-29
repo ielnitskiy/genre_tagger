@@ -75,3 +75,41 @@ def test_write_genre_raises_on_corrupted_id3_instead_of_swallowing(tmp_path):
     make_corrupt_id3(path)
     with pytest.raises(MutagenError):
         tagger.write_genre(str(path), ["Rock"])
+
+
+def test_remove_genre_returns_false_when_no_id3_header(tmp_path):
+    path = tmp_path / "a.mp3"
+    make_mp3(path)
+    assert tagger.remove_genre(str(path)) is False
+
+
+def test_remove_genre_returns_false_when_no_genre_tag(tmp_path):
+    path = tmp_path / "a.mp3"
+    make_mp3(path)
+    tags = EasyID3()
+    tags["title"] = ["Some Title"]
+    tags.save(str(path), v2_version=4)
+
+    assert tagger.remove_genre(str(path)) is False
+
+
+def test_remove_genre_strips_existing_genre_and_returns_true(tmp_path):
+    path = tmp_path / "a.mp3"
+    make_mp3(path)
+    tags = EasyID3()
+    tags["genre"] = ["Rock"]
+    tags["title"] = ["Some Title"]
+    tags.save(str(path), v2_version=4)
+
+    assert tagger.remove_genre(str(path)) is True
+
+    reloaded = EasyID3(str(path))
+    assert "genre" not in reloaded
+    assert reloaded["title"] == ["Some Title"]  # остальные теги не тронуты
+
+
+def test_remove_genre_raises_on_corrupted_id3(tmp_path):
+    path = tmp_path / "corrupt.mp3"
+    make_corrupt_id3(path)
+    with pytest.raises(MutagenError):
+        tagger.remove_genre(str(path))

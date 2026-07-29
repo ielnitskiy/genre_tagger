@@ -230,3 +230,28 @@ def run_once(
         )
 
     log.info("Scan pass finished")
+
+
+def wipe_all_genre_tags(music_dir: str, dry_run: bool = False) -> tuple[int, int, int]:
+    """Обходит весь MUSIC_DIR (не только известные кэшу артисты) и снимает тег
+    genre с каждого mp3. dry_run=True ничего не меняет — только считает, у
+    скольких файлов сейчас есть genre, чтобы --wipe-all-genres мог показать
+    масштаб операции перед подтверждением (см. main.py).
+    Возвращает (сколько файлов просмотрено, сколько затронуто/будет затронуто,
+    сколько не удалось прочитать)."""
+    scanned = affected = failed = 0
+    for root, _dirs, filenames in os.walk(music_dir):
+        for filename in filenames:
+            if not filename.lower().endswith(".mp3"):
+                continue
+            full_path = os.path.join(root, filename)
+            scanned += 1
+            try:
+                changed = tagger.has_genre(full_path) if dry_run else tagger.remove_genre(full_path)
+            except (MutagenError, OSError) as exc:
+                log.warning("Failed to inspect/wipe genre for %s: %s", full_path, exc)
+                failed += 1
+                continue
+            if changed:
+                affected += 1
+    return scanned, affected, failed

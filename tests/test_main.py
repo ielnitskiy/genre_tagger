@@ -171,3 +171,62 @@ def test_aliases_fingerprint_changes_when_aliases_change():
     fp_same = main_module._aliases_fingerprint({"hiphop": "hip hop"})
     assert fp_a == fp_same
     assert fp_a != fp_b
+
+
+def _make_tagged_mp3(path):
+    from mutagen.easyid3 import EasyID3
+
+    from tests.conftest import make_mp3
+
+    make_mp3(path)
+    tags = EasyID3()
+    tags["genre"] = ["Rock"]
+    tags.save(str(path), v2_version=4)
+
+
+def test_wipe_all_genres_without_yes_is_a_dry_run(tmp_path, monkeypatch, capsys):
+    music_dir = tmp_path / "music" / "Artist" / "Album"
+    music_dir.mkdir(parents=True)
+    _make_tagged_mp3(music_dir / "a.mp3")
+
+    config = _config_with_aliases_path(tmp_path, tmp_path / "aliases.json")
+    monkeypatch.setattr(main_module, "load_config", lambda: config)
+    monkeypatch.setattr("sys.argv", ["genre-tagger", "--wipe-all-genres"])
+
+    with pytest.raises(SystemExit):
+        main_module.main()
+
+    from mutagen.easyid3 import EasyID3
+
+    assert EasyID3(str(music_dir / "a.mp3"))["genre"] == ["Rock"]  # ничего не изменилось
+    assert not (tmp_path / "genres.db").exists()  # кэш даже не открывался
+
+
+def test_wipe_all_genres_with_yes_strips_tags_and_resets_cache(tmp_path, monkeypatch):
+    music_dir = tmp_path / "music" / "Artist" / "Album"
+    music_dir.mkdir(parents=True)
+    _make_tagged_mp3(music_dir / "a.mp3")
+
+    db_path = tmp_path / "genres.db"
+    config = _config_with_aliases_path(tmp_path, tmp_path / "aliases.json")
+
+    from src.cache import Cache
+
+    cache = Cache(str(db_path))
+    cache.mark_done("Artist", ["rock"], {}, None, "t")
+    cache.close()
+
+    monkeypatch.setattr(main_module, "load_config", lambda: config)
+    monkeypatch.setattr("sys.argv", ["genre-tagger", "--wipe-all-genres", "--yes"])
+
+    main_module.main()
+
+    from mutagen.easyid3 import EasyID3
+
+    assert "genre" not in EasyID3(str(music_dir / "a.mp3"))
+
+    cache = Cache(str(db_path))
+    try:
+        assert cache.is_done("Artist") is False
+    finally:
+        cache.close()

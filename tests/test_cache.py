@@ -121,3 +121,16 @@ def test_list_artists_returns_all_known_artists(cache):
     cache.mark_done("Artist A", ["rock"], {}, None, "t")
     cache.mark_done("Artist B", None, {}, None, "t")
     assert sorted(cache.list_artists()) == ["Artist A", "Artist B"]
+
+
+def test_wipe_all_clears_artists_force_rewrite_and_config_hash(cache):
+    cache.mark_done("Artist", ["rock"], {}, None, "t")
+    cache.set_force_rewrite("Artist")
+    cache.set_config_hash("10:3:abc")
+
+    cache.wipe_all()
+
+    assert cache.list_artists() == []
+    assert cache.is_done("Artist") is False
+    assert cache.is_force_rewrite("Artist") is False
+    assert cache.get_config_hash() is None

@@ -10,7 +10,7 @@ import time
 from .cache import Cache
 from .config import ConfigError, load_config
 from .lastfm import LastfmClient, canonicalize_tag_name, load_aliases, save_aliases
-from .scanner import run_once
+from .scanner import run_once, wipe_all_genre_tags
 
 log = logging.getLogger(__name__)
 
@@ -96,6 +96,20 @@ def main() -> None:
         "--list-aliases", action="store_true", help="Показать текущий словарь синонимов жанров и выйти"
     )
     parser.add_argument(
+        "--wipe-all-genres",
+        action="store_true",
+        help=(
+            "ОПАСНО: снять genre-тег со ВСЕХ mp3 в MUSIC_DIR и полностью сбросить "
+            "кэш (все артисты станут 'новыми'). Без --yes ничего не меняет — "
+            "только показывает, сколько файлов затронет."
+        ),
+    )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Подтверждение для --wipe-all-genres (без него это dry-run)",
+    )
+    parser.add_argument(
         "--force-scan",
         action="store_true",
         help=(
@@ -139,6 +153,36 @@ def main() -> None:
         else:
             for from_tag, to_tag in sorted(aliases.items()):
                 print(f"{from_tag} -> {to_tag}")
+        return
+
+    if args.wipe_all_genres:
+        scanned, affected, failed = wipe_all_genre_tags(config.music_dir, dry_run=not args.yes)
+        if not args.yes:
+            log.warning(
+                "Dry run: %d/%d mp3 file(s) under %s currently have a genre tag "
+                "(%d unreadable, skipped). Nothing was changed. Re-run with --yes "
+                "to actually strip tags from disk and fully reset the cache.",
+                affected,
+                scanned,
+                config.music_dir,
+                failed,
+            )
+            sys.exit(1)
+        try:
+            cache = Cache(config.db_path)
+        except sqlite3.DatabaseError as exc:
+            log.error("Cannot open cache database at %s: %s", config.db_path, exc)
+            sys.exit(1)
+        cache.wipe_all()
+        cache.close()
+        log.info(
+            "Wiped genre tag from %d/%d mp3 file(s) under %s (%d unreadable, skipped) "
+            "and fully reset the cache",
+            affected,
+            scanned,
+            config.music_dir,
+            failed,
+        )
         return
 
     try:

@@ -137,6 +137,15 @@ class Cache:
         self._conn.execute("DELETE FROM artist_genre WHERE artist = ?", (artist,))
         self._conn.commit()
 
+    def wipe_all(self) -> None:
+        """Полный сброс кэша — используется --wipe-all-genres. В отличие от
+        reset(), также чистит force_rewrite и meta (config_hash), чтобы после
+        сброса не осталось никаких следов предыдущего состояния."""
+        self._conn.execute("DELETE FROM artist_genre")
+        self._conn.execute("DELETE FROM force_rewrite")
+        self._conn.execute("DELETE FROM meta")
+        self._conn.commit()
+
     def iter_with_raw_response(self) -> Iterator[tuple[str, str]]:
         cur = self._conn.execute(
             "SELECT artist, raw_response FROM artist_genre WHERE raw_response IS NOT NULL"

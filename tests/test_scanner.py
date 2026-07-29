@@ -292,3 +292,56 @@ def test_run_once_logs_warning_for_orphaned_cache_entry(tmp_path, cache, caplog)
 
     assert any("ArtistB" in record.message for record in caplog.records)
     assert cache.is_done("ArtistB") is True  # запись не удаляется автоматически
+
+
+def test_wipe_all_genre_tags_strips_genre_from_every_mp3(tmp_path):
+    music_dir = tmp_path / "music"
+    album_a = _make_album(music_dir, "ArtistA", "Album", ["a.mp3"])
+    album_b = _make_album(music_dir, "ArtistB", "Album", ["b.mp3", "c.mp3"])
+    for path in (album_a / "a.mp3", album_b / "b.mp3", album_b / "c.mp3"):
+        tags = EasyID3()
+        tags["genre"] = ["Rock"]
+        tags.save(str(path), v2_version=4)
+
+    scanned, affected, failed = scanner.wipe_all_genre_tags(str(music_dir))
+
+    assert (scanned, affected, failed) == (3, 3, 0)
+    for path in (album_a / "a.mp3", album_b / "b.mp3", album_b / "c.mp3"):
+        assert "genre" not in EasyID3(str(path))
+
+
+def test_wipe_all_genre_tags_dry_run_does_not_modify_files(tmp_path):
+    music_dir = tmp_path / "music"
+    album = _make_album(music_dir, "Artist", "Album", ["a.mp3"])
+    path = album / "a.mp3"
+    tags = EasyID3()
+    tags["genre"] = ["Rock"]
+    tags.save(str(path), v2_version=4)
+
+    scanned, affected, failed = scanner.wipe_all_genre_tags(str(music_dir), dry_run=True)
+
+    assert (scanned, affected, failed) == (1, 1, 0)
+    assert EasyID3(str(path))["genre"] == ["Rock"]  # dry-run ничего не поменял
+
+
+def test_wipe_all_genre_tags_counts_files_without_genre_as_unaffected(tmp_path):
+    music_dir = tmp_path / "music"
+    _make_album(music_dir, "Artist", "Album", ["a.mp3"])  # без genre вообще
+
+    scanned, affected, failed = scanner.wipe_all_genre_tags(str(music_dir))
+
+    assert (scanned, affected, failed) == (1, 0, 0)
+
+
+def test_wipe_all_genre_tags_counts_corrupted_files_as_failed_and_continues(tmp_path):
+    music_dir = tmp_path / "music"
+    album = _make_album(music_dir, "Artist", "Album", ["a.mp3"])
+    make_corrupt_id3(album / "broken.mp3")
+    tags = EasyID3()
+    tags["genre"] = ["Rock"]
+    tags.save(str(album / "a.mp3"), v2_version=4)
+
+    scanned, affected, failed = scanner.wipe_all_genre_tags(str(music_dir))
+
+    assert (scanned, affected, failed) == (2, 1, 1)
+    assert "genre" not in EasyID3(str(album / "a.mp3"))

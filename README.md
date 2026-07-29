@@ -39,6 +39,11 @@
    ```
    docker compose run --rm genre-tagger --add-alias hiphop "hip hop"
    ```
+10. **Полностью стереть все жанры** (ОПАСНО, необратимо без бэкапа файлов) — снимает genre-тег со всех mp3 в `MUSIC_DIR` и полностью сбрасывает кэш, все артисты станут "новыми". Без `--yes` ничего не меняет, только показывает, сколько файлов затронет:
+    ```
+    docker compose run --rm genre-tagger --wipe-all-genres          # dry-run, отчёт в лог
+    docker compose run --rm genre-tagger --wipe-all-genres --yes    # реальное удаление
+    ```
 
 `SCAN_INTERVAL_SECONDS` в `.env` не используется в этой схеме (это параметр run-loop-режима, которым сервис не пользуется — интервал задаётся расписанием cron).
 
