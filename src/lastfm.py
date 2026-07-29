@@ -63,6 +63,7 @@ class LastfmClient:
         }
         for attempt in range(MAX_RETRIES + 1):
             self._throttle()
+            log.debug("Requesting Last.fm artist.getTopTags for %r (attempt %d)", artist, attempt)
             try:
                 resp = requests.get(API_URL, params=params, timeout=REQUEST_TIMEOUT_SECONDS)
             except requests.RequestException as exc:
@@ -81,7 +82,9 @@ class LastfmClient:
             if resp.status_code >= 500:
                 log.warning("Last.fm 5xx for %r (attempt %d): %s", artist, attempt, resp.status_code)
                 continue
+            log.debug("Last.fm responded %d for %r", resp.status_code, artist)
             return resp.text
+        log.warning("Giving up on Last.fm request for %r after %d attempts", artist, MAX_RETRIES + 1)
         return None
 
     @staticmethod
@@ -99,7 +102,12 @@ class LastfmClient:
         raw = self._fetch_top_tags(artist)
         if raw is None:
             return None, None
-        return self.parse_tags(raw), raw
+        genres = self.parse_tags(raw)
+        if genres is None:
+            log.info("No usable genres from Last.fm for %r", artist)
+        else:
+            log.info("Resolved genres for %r: %s", artist, genres)
+        return genres, raw
 
     def parse_tags(self, raw_json: str) -> Optional[list[str]]:
         """Разбирает уже полученный ответ Last.fm без обращения к сети —

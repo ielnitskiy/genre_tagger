@@ -64,13 +64,22 @@ def _tag_new_files(
     failed_files: set[str],
 ) -> None:
     album_path = os.path.join(artist_path, album_name)
+    tagged = 0
     for rel_path in new_files_rel:
         full_path = os.path.join(album_path, rel_path)
         try:
             tagger.write_genre(full_path, genres, force=force)
+            tagged += 1
         except OSError as exc:
             log.warning("Failed to tag %s, will retry next scan: %s", full_path, exc)
             failed_files.add(rel_path)
+    log.info(
+        "Tagged %d/%d file(s) in album %r with genres %s",
+        tagged,
+        len(new_files_rel),
+        album_name,
+        genres,
+    )
 
 
 def scan_artist(
@@ -85,6 +94,7 @@ def scan_artist(
     if not album_dirs:
         return
 
+    log.debug("Scanning artist %r (%d album dir(s))", artist_name, len(album_dirs))
     was_done = cache.is_done(artist_name)
     # Не завязано на was_done: --reset-artist удаляет строку артиста из
     # artist_genre, но флаг force-rewrite живёт в отдельной таблице и должен
@@ -132,6 +142,7 @@ def scan_artist(
         if not changed:
             return
     else:
+        log.info("New artist %r, resolving genres via Last.fm", artist_name)
         genres, raw_json = lastfm.resolve_genres(artist_name)
         new_files_by_album = {
             album_name: set(data["files"]) for album_name, data in current_albums.items()
@@ -167,8 +178,11 @@ def run_once(
     lastfm: LastfmClient,
     force_scan: bool = False,
 ) -> None:
-    for artist_name in _list_artist_dirs(config.music_dir, config.skip_dirs):
+    artist_names = _list_artist_dirs(config.music_dir, config.skip_dirs)
+    log.info("Starting scan pass over %d artist dir(s)", len(artist_names))
+    for artist_name in artist_names:
         try:
             scan_artist(artist_name, config.music_dir, cache, lastfm, force_scan=force_scan)
         except Exception:
             log.exception("Unexpected error while scanning artist %r, continuing", artist_name)
+    log.info("Scan pass finished")
