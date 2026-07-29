@@ -198,6 +198,7 @@ def test_run_once_continues_after_unexpected_error_in_one_artist(tmp_path, cache
         min_tag_count=1,
         max_genres=1,
         genre_ttl_days=180,
+        genre_aliases_path="",
         skip_dirs=frozenset(),
     )
 
@@ -277,6 +278,7 @@ def test_run_once_logs_warning_for_orphaned_cache_entry(tmp_path, cache, caplog)
         min_tag_count=1,
         max_genres=1,
         genre_ttl_days=180,
+        genre_aliases_path="",
         skip_dirs=frozenset(),
     )
     scanner.run_once(config, cache, lastfm)

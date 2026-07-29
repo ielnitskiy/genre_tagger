@@ -1,7 +1,9 @@
 import json
 import logging
+import os
 import re
 import time
+from pathlib import Path
 from typing import Optional
 
 import requests
@@ -37,13 +39,61 @@ TAG_BLOCKLIST = frozenset(
     }
 )
 YEAR_RE = re.compile(r"^\d{2,4}s?$")
+# Last.fm отдаёт один и тот же жанр в разном написании ("ska-punk", "ska punk",
+# "Ska_Punk") как отдельные теги от разных пользователей — схлопываем дефисы/
+# подчёркивания/пробелы и регистр в один канонический вид, чтобы не получить
+# дубли в итоговом списке жанров.
+SEPARATOR_RE = re.compile(r"[\s_-]+")
+
+
+def canonicalize_tag_name(name: str) -> str:
+    return SEPARATOR_RE.sub(" ", name.strip().lower()).strip()
+
+
+def load_aliases(path: Optional[str]) -> dict[str, str]:
+    """Читает словарь синонимов жанров (см. --add-alias/--list-aliases в main.py).
+    Отсутствующий файл — не ошибка, просто словарь ещё пуст. Ключи и значения
+    приводятся к тому же каноническому виду, что и теги Last.fm, чтобы словарь
+    работал независимо от того, как их записали руками."""
+    if not path or not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        log.warning("Cannot load genre aliases from %s: %s", path, exc)
+        return {}
+    if not isinstance(raw, dict):
+        log.warning("Genre aliases file %s must contain a JSON object, ignoring", path)
+        return {}
+    aliases = {}
+    for key, value in raw.items():
+        canonical_key = canonicalize_tag_name(str(key))
+        canonical_value = canonicalize_tag_name(str(value))
+        if canonical_key and canonical_value:
+            aliases[canonical_key] = canonical_value
+    return aliases
+
+
+def save_aliases(path: str, aliases: dict[str, str]) -> None:
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(dict(sorted(aliases.items())), f, ensure_ascii=False, indent=2)
+        f.write("\n")
 
 
 class LastfmClient:
-    def __init__(self, api_key: str, min_tag_count: int, max_genres: int):
+    def __init__(
+        self,
+        api_key: str,
+        min_tag_count: int,
+        max_genres: int,
+        aliases: Optional[dict[str, str]] = None,
+    ):
         self._api_key = api_key
         self._min_tag_count = min_tag_count
         self._max_genres = max_genres
+        self._aliases = aliases or {}
         self._last_request_at = 0.0
 
     def _throttle(self) -> None:
@@ -125,23 +175,30 @@ class LastfmClient:
         return self._filter_tags(tags)
 
     def _filter_tags(self, tags: list[dict]) -> Optional[list[str]]:
-        filtered = []
+        # Дубли-варианты одного жанра (регистр, дефис/пробел/подчёркивание)
+        # схлопываются в canonical-ключ, их count суммируется — иначе один и тот
+        # же жанр, размеченный по-разному разными пользователями Last.fm, мог бы
+        # попасть в теги дважды или не набрать MIN_TAG_COUNT по отдельности.
+        merged_counts: dict[str, int] = {}
         for tag in tags:
             name = tag.get("name", "")
             try:
                 count = int(tag.get("count", 0))
             except (TypeError, ValueError):
                 count = 0
-            normalized = name.strip().lower()
-            if not normalized:
+            canonical = canonicalize_tag_name(name)
+            if not canonical:
                 continue
-            if normalized in TAG_BLOCKLIST:
+            canonical = self._aliases.get(canonical, canonical)
+            if canonical in TAG_BLOCKLIST:
                 continue
-            if YEAR_RE.match(normalized):
+            if YEAR_RE.match(canonical):
                 continue
-            if count < self._min_tag_count:
-                continue
-            filtered.append((count, name))
+            merged_counts[canonical] = merged_counts.get(canonical, 0) + count
+
+        filtered = [
+            (count, name) for name, count in merged_counts.items() if count >= self._min_tag_count
+        ]
         if not filtered:
             return None
         # Не полагаемся на то, что Last.fm сам вернул теги отсортированными по
@@ -149,5 +206,5 @@ class LastfmClient:
         # "жирными" тегами, а не первыми N в порядке ответа API. При равном
         # весе порядок иначе зависел бы от порядка ответа API (недетерминированно
         # для пользователя) — разрешаем по алфавиту.
-        filtered.sort(key=lambda item: (-item[0], item[1].lower()))
+        filtered.sort(key=lambda item: (-item[0], item[1]))
         return [name for _count, name in filtered[: self._max_genres]]

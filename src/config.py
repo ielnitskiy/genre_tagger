@@ -15,6 +15,7 @@ class Config:
     min_tag_count: int
     max_genres: int
     genre_ttl_days: int
+    genre_aliases_path: str
     skip_dirs: frozenset[str]
 
     @property
@@ -57,5 +58,6 @@ def load_config() -> Config:
         min_tag_count=_int_env("MIN_TAG_COUNT", "10"),
         max_genres=_int_env("MAX_GENRES", "3"),
         genre_ttl_days=_int_env("GENRE_TTL_DAYS", "180"),
+        genre_aliases_path=os.environ.get("GENRE_ALIASES_FILE", "/data/genre_aliases.json"),
         skip_dirs=skip_dirs,
     )

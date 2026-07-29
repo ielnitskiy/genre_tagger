@@ -11,6 +11,8 @@ def _clear_env(monkeypatch):
         "SCAN_INTERVAL_SECONDS",
         "MIN_TAG_COUNT",
         "MAX_GENRES",
+        "GENRE_TTL_DAYS",
+        "GENRE_ALIASES_FILE",
         "SKIP_DIRS",
     ):
         monkeypatch.delenv(name, raising=False)
@@ -47,7 +49,17 @@ def test_defaults_applied(monkeypatch):
     assert config.scan_interval_seconds == 86400
     assert config.min_tag_count == 10
     assert config.max_genres == 3
+    assert config.genre_ttl_days == 180
+    assert config.genre_aliases_path == "/data/genre_aliases.json"
     assert config.skip_dirs == frozenset({"download-errors"})
+
+
+def test_genre_aliases_path_overridable(monkeypatch):
+    _clear_env(monkeypatch)
+    monkeypatch.setenv("LASTFM_API_KEY", "key")
+    monkeypatch.setenv("GENRE_ALIASES_FILE", "/custom/aliases.json")
+    config = load_config()
+    assert config.genre_aliases_path == "/custom/aliases.json"
 
 
 def test_skip_dirs_parsed_from_csv(monkeypatch):

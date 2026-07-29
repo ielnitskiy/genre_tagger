@@ -53,6 +53,7 @@ def test_daemon_loop_stops_after_current_scan_pass_on_sigterm(tmp_path, monkeypa
         min_tag_count=1,
         max_genres=1,
         genre_ttl_days=180,
+        genre_aliases_path="",
         skip_dirs=frozenset(),
     )
     (tmp_path / "music").mkdir()
@@ -78,3 +79,95 @@ def _restore_default_signal_handlers():
     yield
     signal.signal(signal.SIGTERM, signal.SIG_DFL)
     signal.signal(signal.SIGINT, signal.default_int_handler)
+
+
+def _config_with_aliases_path(tmp_path, aliases_path):
+    return Config(
+        music_dir=str(tmp_path / "music"),
+        db_path=str(tmp_path / "genres.db"),
+        lastfm_api_key="key",
+        scan_interval_seconds=1,
+        min_tag_count=1,
+        max_genres=1,
+        genre_ttl_days=180,
+        genre_aliases_path=str(aliases_path),
+        skip_dirs=frozenset(),
+    )
+
+
+def test_add_alias_creates_file_with_canonicalized_entry(tmp_path, monkeypatch):
+    aliases_path = tmp_path / "aliases.json"
+    config = _config_with_aliases_path(tmp_path, aliases_path)
+    monkeypatch.setattr(main_module, "load_config", lambda: config)
+    monkeypatch.setattr("sys.argv", ["genre-tagger", "--add-alias", "HipHop", "Hip-Hop"])
+
+    main_module.main()
+
+    from src.lastfm import load_aliases
+
+    assert load_aliases(str(aliases_path)) == {"hiphop": "hip hop"}
+
+
+def test_add_alias_merges_into_existing_file(tmp_path, monkeypatch):
+    aliases_path = tmp_path / "aliases.json"
+    from src.lastfm import save_aliases
+
+    save_aliases(str(aliases_path), {"dnb": "drum and bass"})
+    config = _config_with_aliases_path(tmp_path, aliases_path)
+    monkeypatch.setattr(main_module, "load_config", lambda: config)
+    monkeypatch.setattr("sys.argv", ["genre-tagger", "--add-alias", "ska-punk", "ska punk"])
+
+    main_module.main()
+
+    from src.lastfm import load_aliases
+
+    assert load_aliases(str(aliases_path)) == {
+        "dnb": "drum and bass",
+        "ska punk": "ska punk",
+    }
+
+
+def test_add_alias_rejects_empty_argument(tmp_path, monkeypatch):
+    aliases_path = tmp_path / "aliases.json"
+    config = _config_with_aliases_path(tmp_path, aliases_path)
+    monkeypatch.setattr(main_module, "load_config", lambda: config)
+    monkeypatch.setattr("sys.argv", ["genre-tagger", "--add-alias", "   ", "hip hop"])
+
+    with pytest.raises(SystemExit):
+        main_module.main()
+
+    assert not aliases_path.exists()
+
+
+def test_list_aliases_prints_sorted_entries(tmp_path, monkeypatch, capsys):
+    aliases_path = tmp_path / "aliases.json"
+    from src.lastfm import save_aliases
+
+    save_aliases(str(aliases_path), {"zeta tag": "z genre", "hiphop": "hip hop"})
+    config = _config_with_aliases_path(tmp_path, aliases_path)
+    monkeypatch.setattr(main_module, "load_config", lambda: config)
+    monkeypatch.setattr("sys.argv", ["genre-tagger", "--list-aliases"])
+
+    main_module.main()
+
+    out = capsys.readouterr().out
+    assert out.index("hiphop") < out.index("zeta tag")
+
+
+def test_list_aliases_reports_empty_dictionary(tmp_path, monkeypatch, capsys):
+    aliases_path = tmp_path / "aliases.json"
+    config = _config_with_aliases_path(tmp_path, aliases_path)
+    monkeypatch.setattr(main_module, "load_config", lambda: config)
+    monkeypatch.setattr("sys.argv", ["genre-tagger", "--list-aliases"])
+
+    main_module.main()
+
+    assert "пуст" in capsys.readouterr().out
+
+
+def test_aliases_fingerprint_changes_when_aliases_change():
+    fp_a = main_module._aliases_fingerprint({"hiphop": "hip hop"})
+    fp_b = main_module._aliases_fingerprint({"hiphop": "hip-hop"})
+    fp_same = main_module._aliases_fingerprint({"hiphop": "hip hop"})
+    assert fp_a == fp_same
+    assert fp_a != fp_b

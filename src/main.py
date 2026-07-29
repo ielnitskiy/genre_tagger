@@ -1,4 +1,5 @@
 import argparse
+import hashlib
 import logging
 import os
 import signal
@@ -8,7 +9,7 @@ import time
 
 from .cache import Cache
 from .config import ConfigError, load_config
-from .lastfm import LastfmClient
+from .lastfm import LastfmClient, canonicalize_tag_name, load_aliases, save_aliases
 from .scanner import run_once
 
 log = logging.getLogger(__name__)
@@ -44,11 +45,16 @@ def _sleep_interruptibly(seconds: float, stop: dict) -> None:
         remaining -= SHUTDOWN_POLL_SECONDS
 
 
+def _aliases_fingerprint(aliases: dict[str, str]) -> str:
+    return hashlib.sha256(repr(sorted(aliases.items())).encode()).hexdigest()[:16]
+
+
 def _rewrite_on_config_change(cache: Cache, lastfm: LastfmClient, config_hash: str) -> None:
     """Вопрос 1 из PLAN.md: если MIN_TAG_COUNT/MAX_GENRES изменились с прошлого
-    запуска, пересчитываем фильтрацию тегов локально из уже сохранённого
-    raw_response (без обращения к Last.fm) и форсируем перезапись ID3 у всех
-    затронутых артистов на следующем run_once."""
+    запуска (или изменился словарь GENRE_ALIASES_FILE — см. _aliases_fingerprint
+    в вызывающем коде), пересчитываем фильтрацию тегов локально из уже
+    сохранённого raw_response (без обращения к Last.fm) и форсируем перезапись
+    ID3 у всех затронутых артистов на следующем run_once."""
     stored_hash = cache.get_config_hash()
     if stored_hash == config_hash:
         return
@@ -75,6 +81,21 @@ def main() -> None:
     parser.add_argument("--once", action="store_true", help="Один проход и выход (без цикла)")
     parser.add_argument("--reset-artist", metavar="ARTIST", help="Удалить артиста из кэша и форсировать пересчёт/перезапись")
     parser.add_argument(
+        "--add-alias",
+        nargs=2,
+        metavar=("FROM", "TO"),
+        help=(
+            "Добавить синоним жанра в GENRE_ALIASES_FILE: теги, канонизированные "
+            "к FROM, будут заменяться на TO при следующем пересчёте (например "
+            "--add-alias hiphop 'hip hop'). Ничего не сканирует — только правит "
+            "файл; перезапись ID3 у уже обработанных артистов произойдёт на "
+            "следующем обычном запуске."
+        ),
+    )
+    parser.add_argument(
+        "--list-aliases", action="store_true", help="Показать текущий словарь синонимов жанров и выйти"
+    )
+    parser.add_argument(
         "--force-scan",
         action="store_true",
         help=(
@@ -92,13 +113,42 @@ def main() -> None:
         log.error("Invalid configuration: %s", exc)
         sys.exit(1)
 
+    if args.add_alias:
+        from_tag, to_tag = args.add_alias
+        canonical_from = canonicalize_tag_name(from_tag)
+        canonical_to = canonicalize_tag_name(to_tag)
+        if not canonical_from or not canonical_to:
+            log.error("Both --add-alias arguments must be non-empty")
+            sys.exit(1)
+        aliases = load_aliases(config.genre_aliases_path)
+        aliases[canonical_from] = canonical_to
+        save_aliases(config.genre_aliases_path, aliases)
+        log.info(
+            "Added genre alias %r -> %r to %s (%d total)",
+            canonical_from,
+            canonical_to,
+            config.genre_aliases_path,
+            len(aliases),
+        )
+        return
+
+    if args.list_aliases:
+        aliases = load_aliases(config.genre_aliases_path)
+        if not aliases:
+            print(f"Словарь синонимов пуст ({config.genre_aliases_path})")
+        else:
+            for from_tag, to_tag in sorted(aliases.items()):
+                print(f"{from_tag} -> {to_tag}")
+        return
+
     try:
         cache = Cache(config.db_path)
     except sqlite3.DatabaseError as exc:
         log.error("Cannot open cache database at %s: %s", config.db_path, exc)
         sys.exit(1)
 
-    lastfm = LastfmClient(config.lastfm_api_key, config.min_tag_count, config.max_genres)
+    aliases = load_aliases(config.genre_aliases_path)
+    lastfm = LastfmClient(config.lastfm_api_key, config.min_tag_count, config.max_genres, aliases=aliases)
 
     if args.reset_artist:
         cache.reset(args.reset_artist)
@@ -106,7 +156,8 @@ def main() -> None:
         log.info("Reset cache entry for artist %r, forcing rewrite on next scan", args.reset_artist)
         return
 
-    _rewrite_on_config_change(cache, lastfm, config.config_hash)
+    combined_config_hash = f"{config.config_hash}:{_aliases_fingerprint(aliases)}"
+    _rewrite_on_config_change(cache, lastfm, combined_config_hash)
 
     if args.once:
         run_once(config, cache, lastfm, force_scan=args.force_scan)
