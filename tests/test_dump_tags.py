@@ -68,6 +68,30 @@ def test_final_genre_track_counts_sums_tracks_not_artists(cache):
     assert counts == {"rock": 4, "pop": 3, "jazz": 7}
 
 
+def test_final_counts_diverge_when_artist_has_genre_but_zero_real_tracks(cache):
+    """Регрессия для прод-инцидента, обнаруженного до фикса в
+    test_new_artist_with_no_real_files_is_skipped_without_lastfm_call
+    (test_scanner.py): такие 0-трековые записи больше не создаются заново, но
+    в уже накопленных до фикса данных (или после ручной правки БД) они всё
+    ещё могут встречаться — final_genre_track_counts/artist_counts должны
+    честно показывать расхождение, а не маскировать его."""
+    # 3 живых артиста по 1 треку (3 трека) + 2 с неудачной закачкой (0 треков
+    # каждый) = 5 артистов, но только 3 трека — воспроизводит реальный кейс
+    # "8 track(s) (10 artist(s)) emoviolence" из прода.
+    cache.mark_done("Real Artist 1", ["emoviolence"], _albums(1), None, "t")
+    cache.mark_done("Real Artist 2", ["emoviolence"], _albums(1), None, "t")
+    cache.mark_done("Real Artist 3", ["emoviolence"], _albums(1), None, "t")
+    cache.mark_done("Failed Download Artist 1", ["emoviolence"], _albums(0), None, "t")
+    cache.mark_done("Failed Download Artist 2", ["emoviolence"], _albums(0), None, "t")
+
+    track_counts = dump_tags.final_genre_track_counts(cache)
+    artist_counts = dump_tags.final_genre_artist_counts(cache)
+
+    assert track_counts["emoviolence"] == 3
+    assert artist_counts["emoviolence"] == 5
+    assert track_counts["emoviolence"] < artist_counts["emoviolence"]
+
+
 def test_final_genre_track_counts_ignores_artists_with_no_genre(cache):
     cache.mark_done("Artist A", None, _albums(5), None, "t")
     assert dump_tags.final_genre_track_counts(cache) == {}

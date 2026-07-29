@@ -194,6 +194,21 @@ def scan_artist(
         elif not changed:
             return
     else:
+        total_files = sum(len(data["files"]) for data in current_albums.values())
+        if total_files == 0:
+            # Папка(и) альбома есть, но ни одного .mp3 внутри — похоже на
+            # незавершённую/неудачную закачку. Не тратим запрос к Last.fm и не
+            # кэшируем артиста: без этого он навсегда застревал бы в БД с
+            # резолвленным жанром на 0 реальных треков (см. PLAN.md/README про
+            # расхождение track_count < artist_count). Каждый следующий скан
+            # будет по-прежнему бесплатно перепроверять эту папку — как только
+            # реальные файлы появятся, артист обработается как обычно.
+            log.info(
+                "Artist %r has album dir(s) but no .mp3 files yet (incomplete/failed "
+                "download?), skipping without querying Last.fm",
+                artist_name,
+            )
+            return
         log.info("New artist %r, resolving genres via Last.fm", artist_name)
         genres, raw_json = lastfm.resolve_genres(artist_name)
         new_files_by_album = {

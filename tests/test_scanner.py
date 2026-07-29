@@ -70,6 +70,62 @@ def test_artist_with_no_albums_is_skipped_entirely(tmp_path, cache):
     assert cache.is_done("Artist") is False
 
 
+def test_new_artist_with_no_real_files_is_skipped_without_lastfm_call(tmp_path, cache):
+    """Фикс прод-инцидента: album_dirs непустой (папка альбома есть), но внутри
+    нет ни одного .mp3 (неудачная/незавершённая закачка spotDL) — раньше
+    scan_artist всё равно резолвил жанр через Last.fm по одному имени артиста
+    и кэшировал его как 'done', что давало расхождение track_count <
+    artist_count (см. test_final_counts_diverge_when_artist_has_genre_but_zero_real_tracks
+    в test_dump_tags.py) и "осиротевшие" записи при удалении пустых папок.
+    Теперь такой артист просто пропускается: ни сети, ни записи в кэш."""
+    music_dir = tmp_path / "music"
+    (music_dir / "Artist" / "Failed Download").mkdir(parents=True)  # папка есть, mp3 — нет
+    lastfm = FakeLastfm(genres=["rock"])
+
+    scanner.scan_artist("Artist", str(music_dir), cache, lastfm)
+
+    assert lastfm.calls == []
+    assert cache.is_done("Artist") is False
+
+
+def test_artist_gets_tagged_once_real_files_eventually_appear(tmp_path, cache):
+    """Пропуск пустой закачки не блокирует артиста навсегда — как только
+    реальный .mp3 появится в той же папке, следующий обычный скан должен
+    подхватить его как нового артиста."""
+    music_dir = tmp_path / "music"
+    album_path = music_dir / "Artist" / "Album"
+    album_path.mkdir(parents=True)
+    lastfm = FakeLastfm(genres=["rock"])
+
+    scanner.scan_artist("Artist", str(music_dir), cache, lastfm)
+    assert cache.is_done("Artist") is False
+
+    make_mp3(album_path / "a.mp3")  # закачка "долилась"
+
+    scanner.scan_artist("Artist", str(music_dir), cache, lastfm)
+
+    assert lastfm.calls == ["Artist"]
+    assert cache.is_done("Artist") is True
+    assert EasyID3(str(album_path / "a.mp3"))["genre"] == ["rock"]
+
+
+def test_artist_with_one_empty_and_one_real_album_is_tagged_normally(tmp_path, cache):
+    """Пропуск действует только когда РЕАЛЬНЫХ файлов 0 во ВСЕХ альбомах —
+    если хотя бы один альбом с настоящими треками уже есть, артист
+    обрабатывается как обычно (в т.ч. пустой альбом остаётся в кэше с пустым
+    files-списком, просто не мешает тегированию остального)."""
+    music_dir = tmp_path / "music"
+    (music_dir / "Artist" / "Failed Download").mkdir(parents=True)
+    _make_album(music_dir, "Artist", "Real Album", ["a.mp3"])
+    lastfm = FakeLastfm(genres=["rock"])
+
+    scanner.scan_artist("Artist", str(music_dir), cache, lastfm)
+
+    assert lastfm.calls == ["Artist"]
+    assert cache.is_done("Artist") is True
+    assert EasyID3(str(music_dir / "Artist" / "Real Album" / "a.mp3"))["genre"] == ["rock"]
+
+
 def test_unchanged_artist_does_not_requery_lastfm_or_retag(tmp_path, cache):
     music_dir = tmp_path / "music"
     _make_album(music_dir, "Artist", "Album", ["a.mp3"])
