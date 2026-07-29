@@ -11,3 +11,5 @@ data/
 
 # macOS
 .DS_Store
+/.idea/
+/.claude/

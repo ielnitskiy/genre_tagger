@@ -112,7 +112,13 @@ class LastfmClient:
                 continue
             if count < self._min_tag_count:
                 continue
-            filtered.append(name)
+            filtered.append((count, name))
         if not filtered:
             return None
-        return filtered[: self._max_genres]
+        # Не полагаемся на то, что Last.fm сам вернул теги отсортированными по
+        # весу — сортируем явно, чтобы max_genres гарантированно были самыми
+        # "жирными" тегами, а не первыми N в порядке ответа API. При равном
+        # весе порядок иначе зависел бы от порядка ответа API (недетерминированно
+        # для пользователя) — разрешаем по алфавиту.
+        filtered.sort(key=lambda item: (-item[0], item[1].lower()))
+        return [name for _count, name in filtered[: self._max_genres]]
