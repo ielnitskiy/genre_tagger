@@ -6,6 +6,7 @@ import signal
 import sqlite3
 import sys
 import time
+from typing import Optional
 
 from .cache import Cache
 from .config import ConfigError, load_config
@@ -23,6 +24,66 @@ from .scanner import run_once, scan_artist, wipe_all_genre_tags
 log = logging.getLogger(__name__)
 
 SHUTDOWN_POLL_SECONDS = 1.0  # шаг, которым дробим scan_interval, чтобы SIGTERM/SIGINT прерывали сон быстро
+
+# Разделитель в файле алиасов для --add-alias-file: "главный тег <- вариант1, вариант2".
+# Тот же вид, что печатает --list-aliases, чтобы вывод можно было скопировать в файл.
+ALIAS_FILE_SEPARATOR = "<-"
+
+
+def _apply_alias_pair(
+    groups: dict[str, list[str]],
+    variant: str,
+    main_tag: str,
+    banned: frozenset[str],
+    banlist_path: str,
+) -> Optional[str]:
+    """Добавляет пару вариант -> главный тег в groups (на месте), проверяя всё,
+    что может сделать алиас бесполезным или неожиданным. Возвращает None при
+    успехе или текст ошибки, если пару добавлять нельзя. Используется и
+    --add-alias, и --add-alias-file, чтобы правила были одни и те же."""
+    if variant == main_tag:
+        return f"{variant!r} canonicalizes to itself, variant and main genre must differ"
+
+    # Алиас на забаненное имя молча обходил бы бан (см. _filter_tags) — ловим
+    # конфликт здесь, где его видно, а не в рантайме на каждом теге.
+    if variant in banned:
+        return (
+            f"{variant!r} is in the genre banlist ({banlist_path}) — remove it from there "
+            "first, otherwise the ban wins and this alias would never apply"
+        )
+    if main_tag in banned:
+        return (
+            f"{main_tag!r} is in the genre banlist ({banlist_path}) — aliasing to a banned "
+            "genre would just drop the tag; unban it first or pick another target"
+        )
+
+    # Цепочки (a -> b, где b сам вариант c) разрешаются при загрузке, но
+    # результат почти никогда не совпадает с ожиданием — не даём их создать.
+    if variant in groups:
+        return (
+            f"{variant!r} is already a main genre with variant(s) {groups[variant]} — adding it "
+            f"as a variant of {main_tag!r} would create a chain; merge those variants into "
+            f"{main_tag!r} instead"
+        )
+    owner_of_main = next((c for c, v in groups.items() if main_tag in v), None)
+    if owner_of_main is not None:
+        return (
+            f"{main_tag!r} is itself a variant of {owner_of_main!r} — pointing {variant!r} at it "
+            f"would create a chain; use {owner_of_main!r} as the target instead"
+        )
+
+    previous_owner = next((c for c, v in groups.items() if variant in v), None)
+    if previous_owner == main_tag:
+        log.info("Genre alias %r -> %r already present, nothing to do", variant, main_tag)
+        return None
+    if previous_owner is not None:
+        log.warning("Moving variant %r from %r to %r", variant, previous_owner, main_tag)
+        groups[previous_owner] = [v for v in groups[previous_owner] if v != variant]
+        if not groups[previous_owner]:
+            del groups[previous_owner]
+
+    groups.setdefault(main_tag, []).append(variant)
+    return None
 
 
 def _resolve_log_level() -> int:
@@ -117,6 +178,18 @@ def main() -> None:
             "своих вариантов. Ничего не сканирует — только правит файл; "
             "перезапись ID3 у уже обработанных артистов произойдёт на "
             "следующем обычном запуске."
+        ),
+    )
+    parser.add_argument(
+        "--add-alias-file",
+        metavar="PATH",
+        help=(
+            "Применить пачку алиасов из файла, подготовленного "
+            "scripts/dump_tags.py --suggest-aliases-file: по одной группе на "
+            "строку в виде 'главный тег <- вариант1, вариант2', '#' и всё после "
+            "него — комментарий, пустые строки игнорируются. Проверки те же, "
+            "что у --add-alias; если хотя бы одна строка не проходит, не "
+            "применяется ничего (чтобы не остаться с половиной правок)."
         ),
     )
     parser.add_argument(
@@ -215,72 +288,81 @@ def main() -> None:
         if not variant or not main_tag:
             log.error("Both --add-alias arguments must be non-empty")
             sys.exit(1)
-        if variant == main_tag:
-            log.error("--add-alias arguments must differ (%r canonicalizes to itself)", variant)
-            sys.exit(1)
 
         groups = load_alias_groups(config.genre_aliases_path)
-
-        # Алиас на забаненное имя молча обходил бы бан (см. _filter_tags) —
-        # ловим конфликт здесь, где его видно, а не в рантайме на каждом теге.
         banned = load_banlist(config.genre_banlist_path)
-        if variant in banned:
-            log.error(
-                "%r is in the genre banlist (%s) — remove it from there first, "
-                "otherwise the ban wins and this alias would never apply",
-                variant,
-                config.genre_banlist_path,
-            )
-            sys.exit(1)
-        if main_tag in banned:
-            log.error(
-                "%r is in the genre banlist (%s) — aliasing to a banned genre would "
-                "just drop the tag; unban it first or pick another target",
-                main_tag,
-                config.genre_banlist_path,
-            )
+        error = _apply_alias_pair(groups, variant, main_tag, banned, config.genre_banlist_path)
+        if error:
+            log.error("%s", error)
             sys.exit(1)
 
-        # Цепочки (a -> b, где b сам вариант c) разрешаются при загрузке, но
-        # результат почти никогда не совпадает с ожиданием — не даём их создать.
-        if variant in groups:
-            log.error(
-                "%r is already a main genre with variant(s) %s — adding it as a variant "
-                "of %r would create a chain; merge those variants into %r instead",
-                variant,
-                groups[variant],
-                main_tag,
-                main_tag,
-            )
-            sys.exit(1)
-        owner_of_main = next((c for c, v in groups.items() if main_tag in v), None)
-        if owner_of_main is not None:
-            log.error(
-                "%r is itself a variant of %r — pointing %r at it would create a chain; "
-                "use %r as the target instead",
-                main_tag,
-                owner_of_main,
-                variant,
-                owner_of_main,
-            )
-            sys.exit(1)
-
-        previous_owner = next((c for c, v in groups.items() if variant in v), None)
-        if previous_owner == main_tag:
-            log.info("Genre alias %r -> %r already present, nothing to do", variant, main_tag)
-            return
-        if previous_owner is not None:
-            log.warning("Moving variant %r from %r to %r", variant, previous_owner, main_tag)
-            groups[previous_owner] = [v for v in groups[previous_owner] if v != variant]
-            if not groups[previous_owner]:
-                del groups[previous_owner]
-
-        groups.setdefault(main_tag, []).append(variant)
         save_alias_groups(config.genre_aliases_path, groups)
         log.info(
             "Added genre alias %r -> %r to %s (%d main genre(s), %d variant(s) total)",
             variant,
             main_tag,
+            config.genre_aliases_path,
+            len(groups),
+            sum(len(v) for v in groups.values()),
+        )
+        return
+
+    if args.add_alias_file:
+        if not os.path.isfile(args.add_alias_file):
+            log.error("No such file: %s", args.add_alias_file)
+            sys.exit(1)
+
+        groups = load_alias_groups(config.genre_aliases_path)
+        banned = load_banlist(config.genre_banlist_path)
+        errors: list[str] = []
+        applied = 0
+        with open(args.add_alias_file, "r", encoding="utf-8") as f:
+            for lineno, line in enumerate(f, start=1):
+                line = line.split("#", 1)[0].strip()
+                if not line:
+                    continue
+                if ALIAS_FILE_SEPARATOR not in line:
+                    errors.append(
+                        f"line {lineno}: expected 'MAIN {ALIAS_FILE_SEPARATOR} variant1, variant2', got {line!r}"
+                    )
+                    continue
+                main_raw, variants_raw = line.split(ALIAS_FILE_SEPARATOR, 1)
+                main_tag = canonicalize_tag_name(main_raw)
+                if not main_tag:
+                    errors.append(f"line {lineno}: main genre is empty")
+                    continue
+                variants = [canonicalize_tag_name(v) for v in variants_raw.split(",")]
+                variants = [v for v in variants if v]
+                if not variants:
+                    errors.append(f"line {lineno}: no variants listed for {main_tag!r}")
+                    continue
+                for variant in variants:
+                    error = _apply_alias_pair(
+                        groups, variant, main_tag, banned, config.genre_banlist_path
+                    )
+                    if error:
+                        errors.append(f"line {lineno}: {error}")
+                    else:
+                        applied += 1
+
+        if errors:
+            # Всё-или-ничего: пачечная правка не должна применяться частично,
+            # иначе непонятно, что уже записано, а что надо поправить и повторить.
+            log.error(
+                "%d problem(s) in %s, nothing was written:", len(errors), args.add_alias_file
+            )
+            for error in errors:
+                log.error("  %s", error)
+            sys.exit(1)
+        if not applied:
+            log.warning("No alias groups found in %s, dictionary not changed", args.add_alias_file)
+            return
+
+        save_alias_groups(config.genre_aliases_path, groups)
+        log.info(
+            "Applied %d alias(es) from %s to %s (%d main genre(s), %d variant(s) total)",
+            applied,
+            args.add_alias_file,
             config.genre_aliases_path,
             len(groups),
             sum(len(v) for v in groups.values()),

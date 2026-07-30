@@ -196,10 +196,26 @@ def main() -> None:
             "предлагаются повторно)."
         ),
     )
+    parser.add_argument(
+        "--suggest-aliases-file",
+        metavar="PATH",
+        help=(
+            "Записать заготовку словаря синонимов для ручного review: сначала "
+            "группы, которые предположил difflib, затем — все остальные "
+            "незабаненные теги, закомментированными, по одному на строку в "
+            "алфавитном порядке. difflib ловит только похожее НАПИСАНИЕ, поэтому "
+            "синонимы вроде 'dnb' / 'drum and bass' придётся собрать глазами — "
+            "для этого и нужен полный список. Отредактируйте файл и примените: "
+            "docker compose run --rm genre-tagger --add-alias-file PATH."
+        ),
+    )
     args = parser.parse_args()
 
     if args.no_clusters and args.only_clusters:
         print("--no-clusters и --only-clusters взаимоисключающи", file=sys.stderr)
+        sys.exit(1)
+    if args.suggest_aliases_file and args.no_clusters:
+        print("--suggest-aliases-file несовместим с --no-clusters", file=sys.stderr)
         sys.exit(1)
 
     if not os.path.exists(args.db_path):
@@ -301,6 +317,50 @@ def main() -> None:
                 "\nПохожих по написанию тегов не найдено"
                 + (f" (с учётом --max-tracks {args.max_tracks})" if args.max_tracks is not None else "")
                 + "."
+            )
+
+        if args.suggest_aliases_file:
+            clustered = {tag for cluster in clusters for tag in cluster}
+            # Плоский список — по тегам, реально стоящим в ID3 сейчас: именно их
+            # вы консолидируете. Алфавитный порядок не случаен: родственные
+            # написания оказываются рядом ('dnb' прямо перед 'drum and bass'),
+            # что и позволяет поймать синонимы, недоступные difflib.
+            remaining = sorted(
+                tag
+                for tag in track_counts
+                if tag not in already_banned and tag not in clustered
+            )
+            with open(args.suggest_aliases_file, "w", encoding="utf-8") as f:
+                f.write(
+                    "# Заготовка словаря синонимов жанров.\n"
+                    "# Формат: главный тег <- вариант1, вариант2\n"
+                    "# '#' и всё после него — комментарий; пустые строки игнорируются.\n"
+                    "# Отредактируйте и примените:\n"
+                    f"#   docker compose run --rm genre-tagger --add-alias-file {args.suggest_aliases_file}\n"
+                    "\n"
+                    "# --- Предположения difflib: похожее НАПИСАНИЕ. Проверьте каждую строку:\n"
+                    "# в группу могли попасть и разные жанры ('art rock' / 'hard rock'), и\n"
+                    "# главным тегом наугад взят первый по алфавиту — переставьте, если не тот.\n"
+                )
+                if clusters:
+                    for cluster in clusters:
+                        main_tag, *variants = cluster
+                        f.write(f"{main_tag} <- {', '.join(variants)}\n")
+                else:
+                    f.write("# (difflib ничего не предложил)\n")
+                f.write(
+                    "\n"
+                    "# --- Остальные теги, стоящие в ID3 сейчас (difflib пары для них не нашёл).\n"
+                    "# difflib ловит только похожее написание, поэтому синонимы вроде\n"
+                    "# 'dnb' / 'drum and bass' надо собрать здесь глазами: раскомментируйте\n"
+                    "# и оформите строкой 'главный тег <- вариант1, вариант2'.\n"
+                    "# Порядок алфавитный — родственные написания стоят рядом.\n"
+                )
+                for tag in remaining:
+                    f.write(f"# {tag}\n")
+            print(
+                f"\n=== Заготовка словаря синонимов записана в {args.suggest_aliases_file}: "
+                f"{len(clusters)} группа(ы) от difflib + {len(remaining)} тег(ов) на ручной разбор ==="
             )
 
 

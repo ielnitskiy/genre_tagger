@@ -355,6 +355,103 @@ def test_main_excludes_already_banned_tags_from_cluster_candidates(tmp_path, mon
     assert "mathcore" in out
 
 
+def test_main_suggest_aliases_file_writes_clusters_and_remaining_tags(tmp_path, monkeypatch):
+    db_path = tmp_path / "genres.db"
+    draft_path = tmp_path / "alias_draft.txt"
+
+    cache = Cache(str(db_path))
+    # 'dnb' и 'drum and bass' — синонимы, но difflib их не свяжет (нет общего
+    # написания), поэтому они должны оказаться в закомментированном списке для
+    # ручного разбора, а не в предположениях difflib.
+    cache.mark_done("Artist A", ["dnb"], _albums(3), _raw([("dnb", 100)]), "t")
+    cache.mark_done(
+        "Artist B", ["drum and bass"], _albums(4), _raw([("drum and bass", 100)]), "t"
+    )
+    cache.mark_done("Artist C", ["metalcore"], _albums(5), _raw([("metalcore", 100)]), "t")
+    cache.mark_done("Artist D", ["mathcore"], _albums(2), _raw([("mathcore", 100)]), "t")
+    cache.close()
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "dump_tags.py",
+            "--db-path",
+            str(db_path),
+            "--cutoff",
+            "0.6",
+            "--only-clusters",
+            "--suggest-aliases-file",
+            str(draft_path),
+        ],
+    )
+
+    dump_tags.main()
+
+    content = draft_path.read_text(encoding="utf-8")
+    # difflib связал похожие по написанию — активная строка в формате применения
+    assert "metalcore <- mathcore" in content or "mathcore <- metalcore" in content
+    # синонимы без общего написания — закомментированы, для ручной сборки
+    assert "# dnb" in content
+    assert "# drum and bass" in content
+    assert "--add-alias-file" in content  # подсказка, как применить
+
+
+def test_main_suggest_aliases_file_excludes_banned_tags(tmp_path, monkeypatch):
+    db_path = tmp_path / "genres.db"
+    banlist_path = tmp_path / "banlist.json"
+    draft_path = tmp_path / "alias_draft.txt"
+    from src.lastfm import save_banlist
+
+    save_banlist(str(banlist_path), frozenset({"yandex music"}))
+
+    cache = Cache(str(db_path))
+    cache.mark_done(
+        "Artist A", ["yandex music"], _albums(8), _raw([("yandex music", 100)]), "t"
+    )
+    cache.mark_done("Artist B", ["metalcore"], _albums(5), _raw([("metalcore", 100)]), "t")
+    cache.close()
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "dump_tags.py",
+            "--db-path",
+            str(db_path),
+            "--banlist-path",
+            str(banlist_path),
+            "--only-clusters",
+            "--suggest-aliases-file",
+            str(draft_path),
+        ],
+    )
+
+    dump_tags.main()
+
+    content = draft_path.read_text(encoding="utf-8")
+    assert "yandex music" not in content
+    assert "metalcore" in content
+
+
+def test_main_rejects_suggest_aliases_file_with_no_clusters(tmp_path, monkeypatch):
+    db_path = tmp_path / "genres.db"
+    Cache(str(db_path)).close()
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "dump_tags.py",
+            "--db-path",
+            str(db_path),
+            "--no-clusters",
+            "--suggest-aliases-file",
+            str(tmp_path / "draft.txt"),
+        ],
+    )
+
+    with pytest.raises(SystemExit):
+        dump_tags.main()
+
+
 def test_main_rejects_no_clusters_together_with_only_clusters(tmp_path, monkeypatch):
     db_path = tmp_path / "genres.db"
     Cache(str(db_path)).close()

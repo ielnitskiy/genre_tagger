@@ -267,6 +267,88 @@ def test_add_alias_is_idempotent(tmp_path, monkeypatch):
     assert load_alias_groups(str(aliases_path)) == {"metalcore": ["mathcore"]}
 
 
+def test_add_alias_file_applies_groups(tmp_path, monkeypatch):
+    aliases_path = tmp_path / "aliases.json"
+    candidates_path = tmp_path / "alias_draft.txt"
+    candidates_path.write_text(
+        "# заготовка\n"
+        "\n"
+        "metalcore <- matalcore, mathcore\n"
+        "drum and bass <- dnb   # собрано руками, difflib такое не находит\n"
+        "# hip hop\n",
+        encoding="utf-8",
+    )
+    config = _config_with_aliases_path(tmp_path, aliases_path)
+    monkeypatch.setattr(main_module, "load_config", lambda: config)
+    monkeypatch.setattr("sys.argv", ["genre-tagger", "--add-alias-file", str(candidates_path)])
+
+    main_module.main()
+
+    from src.lastfm import load_alias_groups
+
+    assert load_alias_groups(str(aliases_path)) == {
+        "metalcore": ["matalcore", "mathcore"],
+        "drum and bass": ["dnb"],
+    }
+
+
+def test_add_alias_file_is_all_or_nothing_on_error(tmp_path, monkeypatch, caplog):
+    """Пачечная правка не должна применяться частично — иначе непонятно, что
+    уже записано, а что надо поправить и повторить."""
+    aliases_path = tmp_path / "aliases.json"
+    banlist_path = tmp_path / "banlist.json"
+    candidates_path = tmp_path / "alias_draft.txt"
+    from src.lastfm import save_banlist
+
+    save_banlist(str(banlist_path), frozenset({"k pop"}))
+    candidates_path.write_text(
+        "jazz <- jazzy\n"  # сама по себе валидная строка
+        "мусор без разделителя\n"
+        "punk <- k pop\n",  # забаненная цель
+        encoding="utf-8",
+    )
+    config = _config_with_aliases_path(tmp_path, aliases_path, banlist_path)
+    monkeypatch.setattr(main_module, "load_config", lambda: config)
+    monkeypatch.setattr("sys.argv", ["genre-tagger", "--add-alias-file", str(candidates_path)])
+
+    with caplog.at_level("ERROR"):
+        with pytest.raises(SystemExit):
+            main_module.main()
+
+    assert not aliases_path.exists()  # валидная строка тоже не применилась
+    assert "line 2" in caplog.text
+    assert "line 3" in caplog.text
+
+
+def test_add_alias_file_rejects_missing_file(tmp_path, monkeypatch):
+    aliases_path = tmp_path / "aliases.json"
+    config = _config_with_aliases_path(tmp_path, aliases_path)
+    monkeypatch.setattr(main_module, "load_config", lambda: config)
+    monkeypatch.setattr(
+        "sys.argv", ["genre-tagger", "--add-alias-file", str(tmp_path / "missing.txt")]
+    )
+
+    with pytest.raises(SystemExit):
+        main_module.main()
+
+    assert not aliases_path.exists()
+
+
+def test_add_alias_file_warns_when_only_comments(tmp_path, monkeypatch, caplog):
+    aliases_path = tmp_path / "aliases.json"
+    candidates_path = tmp_path / "alias_draft.txt"
+    candidates_path.write_text("# всё закомментировано\n# rock\n\n", encoding="utf-8")
+    config = _config_with_aliases_path(tmp_path, aliases_path)
+    monkeypatch.setattr(main_module, "load_config", lambda: config)
+    monkeypatch.setattr("sys.argv", ["genre-tagger", "--add-alias-file", str(candidates_path)])
+
+    with caplog.at_level("WARNING"):
+        main_module.main()
+
+    assert not aliases_path.exists()
+    assert "not changed" in caplog.text
+
+
 def test_remove_alias_drops_variant_and_empty_group(tmp_path, monkeypatch):
     aliases_path = tmp_path / "aliases.json"
     from src.lastfm import load_alias_groups, save_alias_groups
