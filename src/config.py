@@ -18,15 +18,25 @@ class Config:
     genre_aliases_path: str
     genre_banlist_path: str = "/data/genre_banlist.json"
     skip_dirs: frozenset[str] = frozenset()
+    ban_after_top_n: bool = False
 
     @property
     def config_hash(self) -> str:
         # Только параметры, влияющие на результат фильтрации тегов —
         # смена интервала/пути не должна форсировать пересчёт жанров.
-        return f"{self.min_tag_count}:{self.max_genres}"
+        return f"{self.min_tag_count}:{self.max_genres}:{int(self.ban_after_top_n)}"
 
 
 DEFAULT_SKIP_DIRS = frozenset({"download-errors"})
+
+
+def _bool_env(name: str, default: str) -> bool:
+    raw = os.environ.get(name, default).strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    raise ConfigError(f"{name} must be a boolean (1/0, true/false), got {raw!r}")
 
 
 def _int_env(name: str, default: str) -> int:
@@ -62,4 +72,5 @@ def load_config() -> Config:
         genre_aliases_path=os.environ.get("GENRE_ALIASES_FILE", "/data/genre_aliases.json"),
         genre_banlist_path=os.environ.get("GENRE_BANLIST_FILE", "/data/genre_banlist.json"),
         skip_dirs=skip_dirs,
+        ban_after_top_n=_bool_env("BAN_AFTER_TOP_N", "0"),
     )

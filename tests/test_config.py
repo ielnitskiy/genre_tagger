@@ -14,6 +14,7 @@ def _clear_env(monkeypatch):
         "GENRE_TTL_DAYS",
         "GENRE_ALIASES_FILE",
         "SKIP_DIRS",
+        "BAN_AFTER_TOP_N",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -52,6 +53,7 @@ def test_defaults_applied(monkeypatch):
     assert config.genre_ttl_days == 180
     assert config.genre_aliases_path == "/data/genre_aliases.json"
     assert config.skip_dirs == frozenset({"download-errors"})
+    assert config.ban_after_top_n is False
 
 
 def test_genre_aliases_path_overridable(monkeypatch):
@@ -81,4 +83,35 @@ def test_config_hash_depends_only_on_tag_filtering_params(monkeypatch):
     monkeypatch.setenv("SCAN_INTERVAL_SECONDS", "999")
     config_b = load_config()
 
-    assert config_a.config_hash == config_b.config_hash == "20:5"
+    assert config_a.config_hash == config_b.config_hash == "20:5:0"
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [("1", True), ("true", True), ("TRUE", True), ("yes", True), ("on", True),
+     ("0", False), ("false", False), ("no", False), ("off", False)],
+)
+def test_ban_after_top_n_parsed_from_env(monkeypatch, raw, expected):
+    _clear_env(monkeypatch)
+    monkeypatch.setenv("LASTFM_API_KEY", "key")
+    monkeypatch.setenv("BAN_AFTER_TOP_N", raw)
+    assert load_config().ban_after_top_n is expected
+
+
+def test_ban_after_top_n_rejects_garbage(monkeypatch):
+    _clear_env(monkeypatch)
+    monkeypatch.setenv("LASTFM_API_KEY", "key")
+    monkeypatch.setenv("BAN_AFTER_TOP_N", "maybe")
+    with pytest.raises(ConfigError):
+        load_config()
+
+
+def test_ban_after_top_n_changes_config_hash(monkeypatch):
+    """Смена режима обязана форсировать офлайн-пересчёт жанров: иначе новые
+    правила применятся только к новым артистам, а библиотека останется старой."""
+    _clear_env(monkeypatch)
+    monkeypatch.setenv("LASTFM_API_KEY", "key")
+    before = load_config().config_hash
+
+    monkeypatch.setenv("BAN_AFTER_TOP_N", "1")
+    assert load_config().config_hash != before

@@ -197,12 +197,14 @@ class LastfmClient:
         max_genres: int,
         aliases: Optional[dict[str, str]] = None,
         banned: Optional[frozenset[str]] = None,
+        ban_after_top_n: bool = False,
     ):
         self._api_key = api_key
         self._min_tag_count = min_tag_count
         self._max_genres = max_genres
         self._aliases = aliases or {}
         self._banned = banned or frozenset()
+        self._ban_after_top_n = ban_after_top_n
         self._last_request_at = 0.0
 
     def _throttle(self) -> None:
@@ -302,10 +304,14 @@ class LastfmClient:
             # алиас на забаненное имя молча обходил бы бан (tag 'trumpet' в
             # бан-листе + алиас trumpet -> jazz давал бы 'jazz'). CLI не даёт
             # создать такой конфликт, но файл могли поправить руками.
-            if canonical in TAG_BLOCKLIST or canonical in self._banned:
+            if canonical in TAG_BLOCKLIST:
+                continue
+            if canonical in self._banned and not self._ban_after_top_n:
                 continue
             canonical = self._aliases.get(canonical, canonical)
-            if canonical in TAG_BLOCKLIST or canonical in self._banned:
+            if canonical in TAG_BLOCKLIST:
+                continue
+            if canonical in self._banned and not self._ban_after_top_n:
                 continue
             if YEAR_RE.match(canonical):
                 continue
@@ -322,4 +328,13 @@ class LastfmClient:
         # весе порядок иначе зависел бы от порядка ответа API (недетерминированно
         # для пользователя) — разрешаем по алфавиту.
         filtered.sort(key=lambda item: (-item[0], item[1]))
-        return [name for _count, name in filtered[: self._max_genres]]
+        top = [name for _count, name in filtered[: self._max_genres]]
+        if not self._ban_after_top_n:
+            return top
+        # BAN_AFTER_TOP_N: топ-N выбирается по всем тегам, и только потом из него
+        # выбрасываются забаненные — освободившийся слот НЕ переиспользуется.
+        # Иначе бан топового тега поднимает в ID3 следующий тег из хвоста, и
+        # число уникальных жанров в библиотеке после бан-прохода растёт вместо
+        # того, чтобы падать (см. "Бан-лист жанров" в README).
+        kept = [name for name in top if name not in self._banned]
+        return kept or None

@@ -22,13 +22,14 @@ def no_real_sleep(monkeypatch):
     monkeypatch.setattr("src.lastfm.time.sleep", lambda _seconds: None)
 
 
-def _client(min_tag_count=10, max_genres=3, aliases=None, banned=None):
+def _client(min_tag_count=10, max_genres=3, aliases=None, banned=None, ban_after_top_n=False):
     return LastfmClient(
         api_key="testkey",
         min_tag_count=min_tag_count,
         max_genres=max_genres,
         aliases=aliases,
         banned=banned,
+        ban_after_top_n=ban_after_top_n,
     )
 
 
@@ -408,6 +409,119 @@ def test_all_genres_banned_returns_none():
     client = _client(min_tag_count=10, max_genres=3, banned=frozenset({"pop"}))
     genres, _raw = client.resolve_genres("Some Artist")
     assert genres is None
+
+
+@responses.activate
+def test_ban_before_top_n_promotes_tag_from_the_tail():
+    """Поведение по умолчанию: топ-N выбирается из НЕзабаненных тегов, поэтому
+    бан топового тега поднимает в ID3 следующий тег из хвоста."""
+    responses.add(
+        responses.GET,
+        API_URL,
+        body=_toptags_body(
+            [
+                {"name": "rock", "count": "100"},
+                {"name": "russian", "count": "90"},
+                {"name": "punk", "count": "80"},
+                {"name": "garage rock", "count": "70"},
+            ]
+        ),
+        status=200,
+    )
+    client = _client(max_genres=3, banned=frozenset({"russian"}))
+    genres, _raw = client.resolve_genres("Some Artist")
+    assert genres == ["rock", "punk", "garage rock"]
+
+
+@responses.activate
+def test_ban_after_top_n_leaves_the_slot_empty():
+    """BAN_AFTER_TOP_N=1: топ-N берётся по всем тегам, забаненные выбрасываются
+    уже из него — 'garage rock' из хвоста НЕ поднимается на место 'russian'."""
+    responses.add(
+        responses.GET,
+        API_URL,
+        body=_toptags_body(
+            [
+                {"name": "rock", "count": "100"},
+                {"name": "russian", "count": "90"},
+                {"name": "punk", "count": "80"},
+                {"name": "garage rock", "count": "70"},
+            ]
+        ),
+        status=200,
+    )
+    client = _client(max_genres=3, banned=frozenset({"russian"}), ban_after_top_n=True)
+    genres, _raw = client.resolve_genres("Some Artist")
+    assert genres == ["rock", "punk"]
+
+
+@responses.activate
+def test_ban_after_top_n_returns_none_when_whole_top_is_banned():
+    """Обратная сторона режима: если забанен весь топ-N, артист остаётся без
+    жанра, хотя в хвосте есть непопавший под бан тег."""
+    responses.add(
+        responses.GET,
+        API_URL,
+        body=_toptags_body(
+            [
+                {"name": "russian", "count": "100"},
+                {"name": "yandex music", "count": "90"},
+                {"name": "punk", "count": "80"},
+            ]
+        ),
+        status=200,
+    )
+    client = _client(
+        max_genres=2,
+        banned=frozenset({"russian", "yandex music"}),
+        ban_after_top_n=True,
+    )
+    genres, _raw = client.resolve_genres("Some Artist")
+    assert genres is None
+
+
+@responses.activate
+def test_ban_after_top_n_still_blocks_alias_target():
+    """Алиас на забаненный тег не должен обходить бан и в этом режиме."""
+    responses.add(
+        responses.GET,
+        API_URL,
+        body=_toptags_body(
+            [
+                {"name": "hiphop", "count": "100"},
+                {"name": "rock", "count": "90"},
+            ]
+        ),
+        status=200,
+    )
+    client = _client(
+        aliases={"hiphop": "hip hop"},
+        banned=frozenset({"hip hop"}),
+        ban_after_top_n=True,
+    )
+    genres, _raw = client.resolve_genres("Some Artist")
+    assert genres == ["rock"]
+
+
+@responses.activate
+def test_ban_after_top_n_keeps_builtin_blocklist_before_the_cut():
+    """TAG_BLOCKLIST остаётся до среза в обоих режимах: 'seen live' не должен
+    занимать слот в топ-N и вытеснять настоящий жанр."""
+    responses.add(
+        responses.GET,
+        API_URL,
+        body=_toptags_body(
+            [
+                {"name": "seen live", "count": "100"},
+                {"name": "rock", "count": "90"},
+                {"name": "punk", "count": "80"},
+            ]
+        ),
+        status=200,
+    )
+    client = _client(max_genres=2, ban_after_top_n=True)
+    genres, _raw = client.resolve_genres("Some Artist")
+    assert genres == ["rock", "punk"]
 
 
 def test_load_banlist_returns_empty_frozenset_for_missing_file(tmp_path):

@@ -511,7 +511,12 @@ def main() -> None:
             config.genre_aliases_path,
         )
     lastfm = LastfmClient(
-        config.lastfm_api_key, config.min_tag_count, config.max_genres, aliases=aliases, banned=banned
+        config.lastfm_api_key,
+        config.min_tag_count,
+        config.max_genres,
+        aliases=aliases,
+        banned=banned,
+        ban_after_top_n=config.ban_after_top_n,
     )
 
     if args.reset_artist:
