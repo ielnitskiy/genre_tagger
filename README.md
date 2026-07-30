@@ -16,7 +16,7 @@
 2. **Поставить на cron (один раз)** — контейнер не демон, `restart: "no"`, запускается только так. Пример на 03:00 ночи, с `--force-scan` на всякий случай (см. ограничение 5):
    ```
    crontab -e
-   0 3 * * * cd /home/biobojlk/projects/genre_tagger && /usr/bin/docker compose run --rm genre-tagger --once --force-scan >> /var/log/genre-tagger.log 2>&1
+   0 3 * * * cd /home/biobojlk/projects/media-server/genre_tagger && /usr/bin/docker compose run --rm genre-tagger --once --force-scan >> /var/log/genre-tagger.log 2>&1
    ```
 3. **Разовый ручной запуск** (то же, что делает cron):
    ```
@@ -119,7 +119,8 @@ python3 scripts/dump_tags.py --db-path ./data/genres.db --max-tracks 10 \
 nano ./data/ban_candidates.txt
 
 # 3. Применить отредактированный список — уходит в постоянный GENRE_BANLIST_FILE
-docker compose run --rm genre-tagger --ban-genre-file ./data/ban_candidates.txt
+#    Путь тут /data/... (внутри контейнера), а не ./data/... — см. врезку ниже
+docker compose run --rm genre-tagger --ban-genre-file /data/ban_candidates.txt
 
 # 4. Применить: снять забаненное с уже затегированных треков и из БД, без сети
 docker compose run --rm genre-tagger --once
@@ -128,6 +129,15 @@ docker compose run --rm genre-tagger --once
 Настоящие дубли написания (не мусор, а синоним) — это отдельный, следующий
 проход, см. "Объединение дублей написания (алиасы)" ниже. Порядок именно такой:
 алиасы имеют смысл только для жанров, которые вы оставляете.
+
+**Внимание к путям: `./data/...` и `/data/...` — не одно и то же.**
+`dump_tags.py` запускается хостовым python из корня проекта, поэтому файлы ему
+передаются как `./data/ban_candidates.txt`. А команды через
+`docker compose run` выполняются **внутри контейнера**, где `WORKDIR=/app`, а
+директория проекта смонтирована как `./data:/data` — там тот же самый файл
+доступен по `/data/ban_candidates.txt`. Если передать в контейнер `./data/...`,
+он развернётся в несуществующий `/app/data/...` и команда упадёт с
+`No such file`.
 
 Бан-лист (`GENRE_BANLIST_FILE`) — обычный отсортированный JSON, поэтому если
 держите `./data` под git (или просто периодически бэкапите), `git diff`
@@ -138,7 +148,7 @@ docker compose run --rm genre-tagger --once
 редактирования JSON — пачкой из файла или по одной паре:
 
 ```
-docker compose run --rm genre-tagger --add-alias-file ./data/alias_draft.txt
+docker compose run --rm genre-tagger --add-alias-file /data/alias_draft.txt
 docker compose run --rm genre-tagger --add-alias hiphop "hip hop"
 docker compose run --rm genre-tagger --remove-alias hiphop
 docker compose run --rm genre-tagger --list-aliases
@@ -225,7 +235,7 @@ python3 scripts/dump_tags.py --db-path ./data/genres.db --max-tracks 10 --no-clu
 
 nano ./data/ban_candidates.txt
 
-docker compose run --rm genre-tagger --ban-genre-file ./data/ban_candidates.txt
+docker compose run --rm genre-tagger --ban-genre-file /data/ban_candidates.txt
 
 docker compose run --rm genre-tagger --once
 ```
@@ -262,7 +272,7 @@ python3 scripts/dump_tags.py --db-path ./data/genres.db --only-clusters \
 
 nano ./data/alias_draft.txt
 
-docker compose run --rm genre-tagger --add-alias-file ./data/alias_draft.txt
+docker compose run --rm genre-tagger --add-alias-file /data/alias_draft.txt
 
 docker compose run --rm genre-tagger --once
 ```

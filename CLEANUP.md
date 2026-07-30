@@ -60,6 +60,11 @@ docker compose build --no-cache   # нужен: менялись src/
 Пересборка обязательна для команд, идущих через `docker compose run`.
 `scripts/dump_tags.py` запускается хостовым python и в образ не входит.
 
+Отсюда же разница в путях ниже: `dump_tags.py` получает файлы как
+`./data/...` (хостовый путь), а `docker compose run` — как `/data/...`
+(`WORKDIR=/app` внутри контейнера, том смонтирован как `./data:/data`).
+Передадите контейнеру `./data/...` — получите `No such file`.
+
 ### Шаг 1. Бан-проход по мусору
 
 ```bash
@@ -69,7 +74,7 @@ python3 scripts/dump_tags.py --db-path ./data/genres.db --no-clusters \
 
 nano ./data/ban_candidates.txt   # удалить строки с жанрами, которые ОСТАВЛЯЕМ
 
-docker compose run --rm genre-tagger --ban-genre-file ./data/ban_candidates.txt
+docker compose run --rm genre-tagger --ban-genre-file /data/ban_candidates.txt
 docker compose run --rm genre-tagger --once
 ```
 
@@ -94,7 +99,7 @@ python3 scripts/dump_tags.py --db-path ./data/genres.db --only-clusters \
 
 nano ./data/alias_draft.txt
 
-docker compose run --rm genre-tagger --add-alias-file ./data/alias_draft.txt
+docker compose run --rm genre-tagger --add-alias-file /data/alias_draft.txt
 docker compose run --rm genre-tagger --once
 ```
 
