@@ -41,7 +41,7 @@ docker compose build
 docker compose run --rm genre-tagger --once --limit 50    # пробный прогон
 docker compose run --rm genre-tagger --once               # вся библиотека
 crontab -e                                                # строка ниже
-# 0 3 * * * cd /home/biobojlk/projects/media-server/genre_tagger && /usr/bin/docker compose run --rm genre-tagger --once --force-scan >> /var/log/genre-tagger.log 2>&1
+# 0 3 * * * cd /home/biobojlk/projects/media-server/genre_tagger && /usr/bin/docker compose run --rm genre-tagger --once >> /home/biobojlk/projects/media-server/genre_tagger/data/cron.log 2>&1
 ```
 
 **Регулярное обслуживание** — раз в несколько месяцев, когда библиотека подросла
@@ -72,7 +72,7 @@ docker compose run --rm genre-tagger --reset-artist "Имя"   # то же, но
 **Диагностика**
 
 ```bash
-tail -f /var/log/genre-tagger.log                          # логи cron
+tail -f data/cron.log                                      # логи cron
 docker compose run --rm genre-tagger --once --force-scan   # игнорировать mtime-gate
 docker compose logs genre-tagger
 ```
@@ -123,10 +123,17 @@ python3.12 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
    `--reset-artist`.
 2. **Имя папки ≠ каноническое имя на Last.fm** → `genre=None`; `autocorrect=1`
    помогает лишь частично.
-3. **Один жанр на всю папку** — сборники и "Various Artists" получат общий.
-4. **Уже проставленный кем-то genre не перезаписывается** на первом проходе
+3. **Однофамильцы получают чужие жанры.** Жанр резолвится по имени папки, а
+   Last.fm отдаёт теги всех групп с таким именем вперемешку. Реальный пример:
+   папка `Scotch` (русская группа) получила `emo, metalcore, italo disco` —
+   последний тег от итальянской italo-disco группы 80-х с тем же названием.
+   `--reset-artist`/`--tag-artist` не помогут: ответ Last.fm будет тем же.
+   Лечится только правкой тега вручную; если случаев накопится много, имеет
+   смысл завести файл ручных переопределений `артист -> жанры`.
+4. **Один жанр на всю папку** — сборники и "Various Artists" получат общий.
+5. **Уже проставленный кем-то genre не перезаписывается** на первом проходе
    нового исполнителя (spotDL genre не пишет, так что встречается редко).
-5. **mtime-gate** полагается на обновление mtime папки при изменении содержимого
+6. **mtime-gate** полагается на обновление mtime папки при изменении содержимого
    — на сетевых ФС (NFS/SMB) стоит проверить, иначе `--force-scan`.
-6. **Осиротевшие записи кэша** (папка удалена с диска) не чистятся сами, только
+7. **Осиротевшие записи кэша** (папка удалена с диска) не чистятся сами, только
    `WARNING` на каждом проходе.
