@@ -50,10 +50,9 @@ def test_daemon_loop_stops_after_current_scan_pass_on_sigterm(tmp_path, monkeypa
         db_path=str(tmp_path / "genres.db"),
         lastfm_api_key="key",
         scan_interval_seconds=10_000,  # заведомо больше, чем должен реально проспать тест
-        min_tag_count=1,
-        max_genres=1,
         genre_ttl_days=180,
-        genre_aliases_path="",
+        banlist_path=str(tmp_path / "banlist.txt"),
+        aliases_path=str(tmp_path / "aliases.txt"),
         skip_dirs=frozenset(),
     )
     (tmp_path / "music").mkdir()
@@ -81,538 +80,17 @@ def _restore_default_signal_handlers():
     signal.signal(signal.SIGINT, signal.default_int_handler)
 
 
-def _config_with_aliases_path(tmp_path, aliases_path, banlist_path=None):
+def _config(tmp_path, banlist_path=None, aliases_path=None):
     return Config(
         music_dir=str(tmp_path / "music"),
         db_path=str(tmp_path / "genres.db"),
         lastfm_api_key="key",
         scan_interval_seconds=1,
-        min_tag_count=1,
-        max_genres=1,
         genre_ttl_days=180,
-        genre_aliases_path=str(aliases_path),
-        # Явный tmp-путь, а не дефолтный /data/... — --add-alias читает бан-лист,
-        # чтобы поймать конфликт, и не должен зависеть от ФС хоста.
-        genre_banlist_path=str(banlist_path or tmp_path / "banlist.json"),
+        banlist_path=str(banlist_path or tmp_path / "banlist.txt"),
+        aliases_path=str(aliases_path or tmp_path / "aliases.txt"),
         skip_dirs=frozenset(),
     )
-
-
-def test_add_alias_creates_file_with_canonicalized_group(tmp_path, monkeypatch):
-    aliases_path = tmp_path / "aliases.json"
-    config = _config_with_aliases_path(tmp_path, aliases_path)
-    monkeypatch.setattr(main_module, "load_config", lambda: config)
-    monkeypatch.setattr("sys.argv", ["genre-tagger", "--add-alias", "HipHop", "Hip-Hop"])
-
-    main_module.main()
-
-    from src.lastfm import load_alias_groups
-
-    assert load_alias_groups(str(aliases_path)) == {"hip hop": ["hiphop"]}
-
-
-def test_add_alias_appends_second_variant_to_same_group(tmp_path, monkeypatch):
-    """Ключевая выгода группового формата: несколько вариантов одного главного
-    тега лежат в одной записи, а не размазаны по всему файлу."""
-    aliases_path = tmp_path / "aliases.json"
-    from src.lastfm import load_alias_groups, save_alias_groups
-
-    save_alias_groups(str(aliases_path), {"metalcore": ["mathcore"]})
-    config = _config_with_aliases_path(tmp_path, aliases_path)
-    monkeypatch.setattr(main_module, "load_config", lambda: config)
-    monkeypatch.setattr("sys.argv", ["genre-tagger", "--add-alias", "matalcore", "metalcore"])
-
-    main_module.main()
-
-    assert load_alias_groups(str(aliases_path)) == {"metalcore": ["matalcore", "mathcore"]}
-
-
-def test_add_alias_merges_into_existing_file(tmp_path, monkeypatch):
-    aliases_path = tmp_path / "aliases.json"
-    from src.lastfm import load_alias_groups, save_alias_groups
-
-    save_alias_groups(str(aliases_path), {"drum and bass": ["dnb"]})
-    config = _config_with_aliases_path(tmp_path, aliases_path)
-    monkeypatch.setattr(main_module, "load_config", lambda: config)
-    monkeypatch.setattr("sys.argv", ["genre-tagger", "--add-alias", "ska-core", "ska punk"])
-
-    main_module.main()
-
-    assert load_alias_groups(str(aliases_path)) == {
-        "drum and bass": ["dnb"],
-        "ska punk": ["ska core"],
-    }
-
-
-def test_add_alias_rejects_empty_argument(tmp_path, monkeypatch):
-    aliases_path = tmp_path / "aliases.json"
-    config = _config_with_aliases_path(tmp_path, aliases_path)
-    monkeypatch.setattr(main_module, "load_config", lambda: config)
-    monkeypatch.setattr("sys.argv", ["genre-tagger", "--add-alias", "   ", "hip hop"])
-
-    with pytest.raises(SystemExit):
-        main_module.main()
-
-    assert not aliases_path.exists()
-
-
-def test_add_alias_rejects_identical_arguments(tmp_path, monkeypatch):
-    aliases_path = tmp_path / "aliases.json"
-    config = _config_with_aliases_path(tmp_path, aliases_path)
-    monkeypatch.setattr(main_module, "load_config", lambda: config)
-    monkeypatch.setattr("sys.argv", ["genre-tagger", "--add-alias", "Ska-Punk", "ska punk"])
-
-    with pytest.raises(SystemExit):
-        main_module.main()
-
-    assert not aliases_path.exists()
-
-
-def test_add_alias_rejects_banned_variant(tmp_path, monkeypatch):
-    """Иначе алиас молча не сработал бы: в _filter_tags бан выигрывает."""
-    aliases_path = tmp_path / "aliases.json"
-    banlist_path = tmp_path / "banlist.json"
-    from src.lastfm import save_banlist
-
-    save_banlist(str(banlist_path), frozenset({"trumpet"}))
-    config = _config_with_aliases_path(tmp_path, aliases_path, banlist_path)
-    monkeypatch.setattr(main_module, "load_config", lambda: config)
-    monkeypatch.setattr("sys.argv", ["genre-tagger", "--add-alias", "trumpet", "jazz"])
-
-    with pytest.raises(SystemExit):
-        main_module.main()
-
-    assert not aliases_path.exists()
-
-
-def test_add_alias_rejects_banned_target(tmp_path, monkeypatch):
-    aliases_path = tmp_path / "aliases.json"
-    banlist_path = tmp_path / "banlist.json"
-    from src.lastfm import save_banlist
-
-    save_banlist(str(banlist_path), frozenset({"jazz"}))
-    config = _config_with_aliases_path(tmp_path, aliases_path, banlist_path)
-    monkeypatch.setattr(main_module, "load_config", lambda: config)
-    monkeypatch.setattr("sys.argv", ["genre-tagger", "--add-alias", "trumpet", "jazz"])
-
-    with pytest.raises(SystemExit):
-        main_module.main()
-
-    assert not aliases_path.exists()
-
-
-def test_add_alias_rejects_chain_when_variant_is_already_a_main_genre(tmp_path, monkeypatch):
-    """metalcore уже главный тег со своими вариантами; сделать его вариантом
-    hardcore — значит создать цепочку mathcore -> metalcore -> hardcore."""
-    aliases_path = tmp_path / "aliases.json"
-    from src.lastfm import load_alias_groups, save_alias_groups
-
-    save_alias_groups(str(aliases_path), {"metalcore": ["mathcore"]})
-    config = _config_with_aliases_path(tmp_path, aliases_path)
-    monkeypatch.setattr(main_module, "load_config", lambda: config)
-    monkeypatch.setattr("sys.argv", ["genre-tagger", "--add-alias", "metalcore", "hardcore"])
-
-    with pytest.raises(SystemExit):
-        main_module.main()
-
-    assert load_alias_groups(str(aliases_path)) == {"metalcore": ["mathcore"]}
-
-
-def test_add_alias_rejects_chain_when_target_is_already_a_variant(tmp_path, monkeypatch):
-    aliases_path = tmp_path / "aliases.json"
-    from src.lastfm import load_alias_groups, save_alias_groups
-
-    save_alias_groups(str(aliases_path), {"metalcore": ["mathcore"]})
-    config = _config_with_aliases_path(tmp_path, aliases_path)
-    monkeypatch.setattr(main_module, "load_config", lambda: config)
-    # Целью указан 'mathcore', который сам является вариантом 'metalcore'.
-    monkeypatch.setattr("sys.argv", ["genre-tagger", "--add-alias", "math core rock", "mathcore"])
-
-    with pytest.raises(SystemExit):
-        main_module.main()
-
-    assert load_alias_groups(str(aliases_path)) == {"metalcore": ["mathcore"]}
-
-
-def test_add_alias_moves_variant_between_groups_with_warning(tmp_path, monkeypatch, caplog):
-    aliases_path = tmp_path / "aliases.json"
-    from src.lastfm import load_alias_groups, save_alias_groups
-
-    save_alias_groups(str(aliases_path), {"metalcore": ["mathcore", "matalcore"]})
-    config = _config_with_aliases_path(tmp_path, aliases_path)
-    monkeypatch.setattr(main_module, "load_config", lambda: config)
-    monkeypatch.setattr("sys.argv", ["genre-tagger", "--add-alias", "mathcore", "hardcore"])
-
-    with caplog.at_level("WARNING"):
-        main_module.main()
-
-    assert load_alias_groups(str(aliases_path)) == {
-        "metalcore": ["matalcore"],
-        "hardcore": ["mathcore"],
-    }
-    assert "Moving variant" in caplog.text
-
-
-def test_add_alias_is_idempotent(tmp_path, monkeypatch):
-    aliases_path = tmp_path / "aliases.json"
-    from src.lastfm import load_alias_groups, save_alias_groups
-
-    save_alias_groups(str(aliases_path), {"metalcore": ["mathcore"]})
-    config = _config_with_aliases_path(tmp_path, aliases_path)
-    monkeypatch.setattr(main_module, "load_config", lambda: config)
-    monkeypatch.setattr("sys.argv", ["genre-tagger", "--add-alias", "mathcore", "metalcore"])
-
-    main_module.main()
-
-    assert load_alias_groups(str(aliases_path)) == {"metalcore": ["mathcore"]}
-
-
-def test_add_alias_file_applies_groups(tmp_path, monkeypatch):
-    aliases_path = tmp_path / "aliases.json"
-    candidates_path = tmp_path / "alias_draft.txt"
-    candidates_path.write_text(
-        "# заготовка\n"
-        "\n"
-        "metalcore <- matalcore, mathcore\n"
-        "drum and bass <- dnb   # собрано руками, difflib такое не находит\n"
-        "# hip hop\n",
-        encoding="utf-8",
-    )
-    config = _config_with_aliases_path(tmp_path, aliases_path)
-    monkeypatch.setattr(main_module, "load_config", lambda: config)
-    monkeypatch.setattr("sys.argv", ["genre-tagger", "--add-alias-file", str(candidates_path)])
-
-    main_module.main()
-
-    from src.lastfm import load_alias_groups
-
-    assert load_alias_groups(str(aliases_path)) == {
-        "metalcore": ["matalcore", "mathcore"],
-        "drum and bass": ["dnb"],
-    }
-
-
-def test_add_alias_file_is_all_or_nothing_on_error(tmp_path, monkeypatch, caplog):
-    """Пачечная правка не должна применяться частично — иначе непонятно, что
-    уже записано, а что надо поправить и повторить."""
-    aliases_path = tmp_path / "aliases.json"
-    banlist_path = tmp_path / "banlist.json"
-    candidates_path = tmp_path / "alias_draft.txt"
-    from src.lastfm import save_banlist
-
-    save_banlist(str(banlist_path), frozenset({"k pop"}))
-    candidates_path.write_text(
-        "jazz <- jazzy\n"  # сама по себе валидная строка
-        "мусор без разделителя\n"
-        "punk <- k pop\n",  # забаненная цель
-        encoding="utf-8",
-    )
-    config = _config_with_aliases_path(tmp_path, aliases_path, banlist_path)
-    monkeypatch.setattr(main_module, "load_config", lambda: config)
-    monkeypatch.setattr("sys.argv", ["genre-tagger", "--add-alias-file", str(candidates_path)])
-
-    with caplog.at_level("ERROR"):
-        with pytest.raises(SystemExit):
-            main_module.main()
-
-    assert not aliases_path.exists()  # валидная строка тоже не применилась
-    assert "line 2" in caplog.text
-    assert "line 3" in caplog.text
-
-
-def test_add_alias_file_rejects_missing_file(tmp_path, monkeypatch):
-    aliases_path = tmp_path / "aliases.json"
-    config = _config_with_aliases_path(tmp_path, aliases_path)
-    monkeypatch.setattr(main_module, "load_config", lambda: config)
-    monkeypatch.setattr(
-        "sys.argv", ["genre-tagger", "--add-alias-file", str(tmp_path / "missing.txt")]
-    )
-
-    with pytest.raises(SystemExit):
-        main_module.main()
-
-    assert not aliases_path.exists()
-
-
-def test_add_alias_file_warns_when_only_comments(tmp_path, monkeypatch, caplog):
-    aliases_path = tmp_path / "aliases.json"
-    candidates_path = tmp_path / "alias_draft.txt"
-    candidates_path.write_text("# всё закомментировано\n# rock\n\n", encoding="utf-8")
-    config = _config_with_aliases_path(tmp_path, aliases_path)
-    monkeypatch.setattr(main_module, "load_config", lambda: config)
-    monkeypatch.setattr("sys.argv", ["genre-tagger", "--add-alias-file", str(candidates_path)])
-
-    with caplog.at_level("WARNING"):
-        main_module.main()
-
-    assert not aliases_path.exists()
-    assert "not changed" in caplog.text
-
-
-def test_remove_alias_drops_variant_and_empty_group(tmp_path, monkeypatch):
-    aliases_path = tmp_path / "aliases.json"
-    from src.lastfm import load_alias_groups, save_alias_groups
-
-    save_alias_groups(str(aliases_path), {"metalcore": ["mathcore"], "drum and bass": ["dnb"]})
-    config = _config_with_aliases_path(tmp_path, aliases_path)
-    monkeypatch.setattr(main_module, "load_config", lambda: config)
-    monkeypatch.setattr("sys.argv", ["genre-tagger", "--remove-alias", "MathCore"])
-
-    main_module.main()
-
-    assert load_alias_groups(str(aliases_path)) == {"drum and bass": ["dnb"]}
-
-
-def test_remove_alias_keeps_group_with_remaining_variants(tmp_path, monkeypatch):
-    aliases_path = tmp_path / "aliases.json"
-    from src.lastfm import load_alias_groups, save_alias_groups
-
-    save_alias_groups(str(aliases_path), {"metalcore": ["mathcore", "matalcore"]})
-    config = _config_with_aliases_path(tmp_path, aliases_path)
-    monkeypatch.setattr(main_module, "load_config", lambda: config)
-    monkeypatch.setattr("sys.argv", ["genre-tagger", "--remove-alias", "mathcore"])
-
-    main_module.main()
-
-    assert load_alias_groups(str(aliases_path)) == {"metalcore": ["matalcore"]}
-
-
-def test_remove_alias_rejects_unknown_variant(tmp_path, monkeypatch):
-    aliases_path = tmp_path / "aliases.json"
-    from src.lastfm import load_alias_groups, save_alias_groups
-
-    save_alias_groups(str(aliases_path), {"metalcore": ["mathcore"]})
-    config = _config_with_aliases_path(tmp_path, aliases_path)
-    monkeypatch.setattr(main_module, "load_config", lambda: config)
-    monkeypatch.setattr("sys.argv", ["genre-tagger", "--remove-alias", "nope"])
-
-    with pytest.raises(SystemExit):
-        main_module.main()
-
-    assert load_alias_groups(str(aliases_path)) == {"metalcore": ["mathcore"]}
-
-
-def test_list_aliases_prints_groups_sorted(tmp_path, monkeypatch, capsys):
-    aliases_path = tmp_path / "aliases.json"
-    from src.lastfm import save_alias_groups
-
-    save_alias_groups(str(aliases_path), {"zeta genre": ["z1"], "hip hop": ["hiphop", "hip-hop2"]})
-    config = _config_with_aliases_path(tmp_path, aliases_path)
-    monkeypatch.setattr(main_module, "load_config", lambda: config)
-    monkeypatch.setattr("sys.argv", ["genre-tagger", "--list-aliases"])
-
-    main_module.main()
-
-    out = capsys.readouterr().out
-    assert out.index("hip hop") < out.index("zeta genre")
-    assert "hip hop <- hip hop2, hiphop" in out
-
-
-def test_list_aliases_reports_empty_dictionary(tmp_path, monkeypatch, capsys):
-    aliases_path = tmp_path / "aliases.json"
-    config = _config_with_aliases_path(tmp_path, aliases_path)
-    monkeypatch.setattr(main_module, "load_config", lambda: config)
-    monkeypatch.setattr("sys.argv", ["genre-tagger", "--list-aliases"])
-
-    main_module.main()
-
-    assert "пуст" in capsys.readouterr().out
-
-
-def test_aliases_fingerprint_changes_when_aliases_change():
-    fp_a = main_module._aliases_fingerprint({"hiphop": "hip hop"})
-    fp_b = main_module._aliases_fingerprint({"hiphop": "hip-hop"})
-    fp_same = main_module._aliases_fingerprint({"hiphop": "hip hop"})
-    assert fp_a == fp_same
-    assert fp_a != fp_b
-
-
-def _config_with_banlist_path(tmp_path, banlist_path):
-    return Config(
-        music_dir=str(tmp_path / "music"),
-        db_path=str(tmp_path / "genres.db"),
-        lastfm_api_key="key",
-        scan_interval_seconds=1,
-        min_tag_count=1,
-        max_genres=1,
-        genre_ttl_days=180,
-        genre_aliases_path=str(tmp_path / "aliases.json"),
-        genre_banlist_path=str(banlist_path),
-        skip_dirs=frozenset(),
-    )
-
-
-def test_ban_genre_creates_file_with_canonicalized_entry(tmp_path, monkeypatch):
-    banlist_path = tmp_path / "banlist.json"
-    config = _config_with_banlist_path(tmp_path, banlist_path)
-    monkeypatch.setattr(main_module, "load_config", lambda: config)
-    monkeypatch.setattr("sys.argv", ["genre-tagger", "--ban-genre", "K-Pop"])
-
-    main_module.main()
-
-    from src.lastfm import load_banlist
-
-    assert load_banlist(str(banlist_path)) == {"k pop"}
-
-
-def test_ban_genre_accepts_multiple_values_in_one_call(tmp_path, monkeypatch):
-    banlist_path = tmp_path / "banlist.json"
-    config = _config_with_banlist_path(tmp_path, banlist_path)
-    monkeypatch.setattr(main_module, "load_config", lambda: config)
-    monkeypatch.setattr(
-        "sys.argv", ["genre-tagger", "--ban-genre", "trumpet", "Icelandic", "belarussian"]
-    )
-
-    main_module.main()
-
-    from src.lastfm import load_banlist
-
-    assert load_banlist(str(banlist_path)) == {"trumpet", "icelandic", "belarussian"}
-
-
-def test_ban_genre_merges_into_existing_file(tmp_path, monkeypatch):
-    banlist_path = tmp_path / "banlist.json"
-    from src.lastfm import save_banlist
-
-    save_banlist(str(banlist_path), frozenset({"pop"}))
-    config = _config_with_banlist_path(tmp_path, banlist_path)
-    monkeypatch.setattr(main_module, "load_config", lambda: config)
-    monkeypatch.setattr("sys.argv", ["genre-tagger", "--ban-genre", "disco"])
-
-    main_module.main()
-
-    from src.lastfm import load_banlist
-
-    assert load_banlist(str(banlist_path)) == {"pop", "disco"}
-
-
-def test_ban_genre_rejects_empty_argument(tmp_path, monkeypatch):
-    banlist_path = tmp_path / "banlist.json"
-    config = _config_with_banlist_path(tmp_path, banlist_path)
-    monkeypatch.setattr(main_module, "load_config", lambda: config)
-    monkeypatch.setattr("sys.argv", ["genre-tagger", "--ban-genre", "   "])
-
-    with pytest.raises(SystemExit):
-        main_module.main()
-
-    assert not banlist_path.exists()
-
-
-def test_list_banned_genres_prints_sorted_entries(tmp_path, monkeypatch, capsys):
-    banlist_path = tmp_path / "banlist.json"
-    from src.lastfm import save_banlist
-
-    save_banlist(str(banlist_path), frozenset({"zeta genre", "alpha genre"}))
-    config = _config_with_banlist_path(tmp_path, banlist_path)
-    monkeypatch.setattr(main_module, "load_config", lambda: config)
-    monkeypatch.setattr("sys.argv", ["genre-tagger", "--list-banned-genres"])
-
-    main_module.main()
-
-    out = capsys.readouterr().out
-    assert out.index("alpha genre") < out.index("zeta genre")
-
-
-def test_list_banned_genres_reports_empty_list(tmp_path, monkeypatch, capsys):
-    banlist_path = tmp_path / "banlist.json"
-    config = _config_with_banlist_path(tmp_path, banlist_path)
-    monkeypatch.setattr(main_module, "load_config", lambda: config)
-    monkeypatch.setattr("sys.argv", ["genre-tagger", "--list-banned-genres"])
-
-    main_module.main()
-
-    assert "пуст" in capsys.readouterr().out
-
-
-def test_banlist_fingerprint_changes_when_banlist_changes():
-    fp_a = main_module._banlist_fingerprint(frozenset({"pop"}))
-    fp_b = main_module._banlist_fingerprint(frozenset({"pop", "disco"}))
-    fp_same = main_module._banlist_fingerprint(frozenset({"pop"}))
-    assert fp_a == fp_same
-    assert fp_a != fp_b
-
-
-def test_ban_genre_file_applies_edited_candidate_list(tmp_path, monkeypatch):
-    banlist_path = tmp_path / "banlist.json"
-    candidates_path = tmp_path / "candidates.txt"
-    candidates_path.write_text(
-        "# Кандидаты на бан\n"
-        "\n"
-        "trumpet  # 2 track(s), 1 artist(s)\n"
-        "icelandic  # 3 track(s), 1 artist(s)\n",
-        encoding="utf-8",
-    )
-    config = _config_with_banlist_path(tmp_path, banlist_path)
-    monkeypatch.setattr(main_module, "load_config", lambda: config)
-    monkeypatch.setattr("sys.argv", ["genre-tagger", "--ban-genre-file", str(candidates_path)])
-
-    main_module.main()
-
-    from src.lastfm import load_banlist
-
-    assert load_banlist(str(banlist_path)) == {"trumpet", "icelandic"}
-
-
-def test_ban_genre_file_respects_manually_removed_lines(tmp_path, monkeypatch):
-    banlist_path = tmp_path / "banlist.json"
-    candidates_path = tmp_path / "candidates.txt"
-    # Пользователь вручную удалил строку с icelandic, оставив только trumpet.
-    candidates_path.write_text("trumpet  # 2 track(s), 1 artist(s)\n", encoding="utf-8")
-    config = _config_with_banlist_path(tmp_path, banlist_path)
-    monkeypatch.setattr(main_module, "load_config", lambda: config)
-    monkeypatch.setattr("sys.argv", ["genre-tagger", "--ban-genre-file", str(candidates_path)])
-
-    main_module.main()
-
-    from src.lastfm import load_banlist
-
-    assert load_banlist(str(banlist_path)) == {"trumpet"}
-
-
-def test_ban_genre_file_merges_with_existing_banlist(tmp_path, monkeypatch):
-    from src.lastfm import save_banlist
-
-    banlist_path = tmp_path / "banlist.json"
-    save_banlist(str(banlist_path), frozenset({"already banned"}))
-    candidates_path = tmp_path / "candidates.txt"
-    candidates_path.write_text("trumpet\n", encoding="utf-8")
-    config = _config_with_banlist_path(tmp_path, banlist_path)
-    monkeypatch.setattr(main_module, "load_config", lambda: config)
-    monkeypatch.setattr("sys.argv", ["genre-tagger", "--ban-genre-file", str(candidates_path)])
-
-    main_module.main()
-
-    from src.lastfm import load_banlist
-
-    assert load_banlist(str(banlist_path)) == {"already banned", "trumpet"}
-
-
-def test_ban_genre_file_rejects_missing_file(tmp_path, monkeypatch):
-    banlist_path = tmp_path / "banlist.json"
-    config = _config_with_banlist_path(tmp_path, banlist_path)
-    monkeypatch.setattr(main_module, "load_config", lambda: config)
-    monkeypatch.setattr(
-        "sys.argv", ["genre-tagger", "--ban-genre-file", str(tmp_path / "missing.txt")]
-    )
-
-    with pytest.raises(SystemExit):
-        main_module.main()
-
-    assert not banlist_path.exists()
-
-
-def test_ban_genre_file_warns_when_only_comments_and_blank_lines(tmp_path, monkeypatch, caplog):
-    banlist_path = tmp_path / "banlist.json"
-    candidates_path = tmp_path / "candidates.txt"
-    candidates_path.write_text("# всё удалено\n\n", encoding="utf-8")
-    config = _config_with_banlist_path(tmp_path, banlist_path)
-    monkeypatch.setattr(main_module, "load_config", lambda: config)
-    monkeypatch.setattr("sys.argv", ["genre-tagger", "--ban-genre-file", str(candidates_path)])
-
-    with caplog.at_level("WARNING"):
-        main_module.main()
-
-    assert not banlist_path.exists()
 
 
 def _make_tagged_mp3(path):
@@ -631,7 +109,7 @@ def test_wipe_all_genres_without_yes_is_a_dry_run(tmp_path, monkeypatch, capsys)
     music_dir.mkdir(parents=True)
     _make_tagged_mp3(music_dir / "a.mp3")
 
-    config = _config_with_aliases_path(tmp_path, tmp_path / "aliases.json")
+    config = _config(tmp_path)
     monkeypatch.setattr(main_module, "load_config", lambda: config)
     monkeypatch.setattr("sys.argv", ["genre-tagger", "--wipe-all-genres"])
 
@@ -650,7 +128,7 @@ def test_wipe_all_genres_with_yes_strips_tags_and_resets_cache(tmp_path, monkeyp
     _make_tagged_mp3(music_dir / "a.mp3")
 
     db_path = tmp_path / "genres.db"
-    config = _config_with_aliases_path(tmp_path, tmp_path / "aliases.json")
+    config = _config(tmp_path)
 
     from src.cache import Cache
 
@@ -672,3 +150,60 @@ def test_wipe_all_genres_with_yes_strips_tags_and_resets_cache(tmp_path, monkeyp
         assert cache.is_done("Artist") is False
     finally:
         cache.close()
+
+
+def test_report_prints_genres_and_similar_pairs(tmp_path, monkeypatch, capsys):
+    from src.cache import Cache
+
+    cache = Cache(str(tmp_path / "genres.db"))
+    albums = {"Album": {"mtime": 1.0, "files": ["a.mp3", "b.mp3"]}}
+    cache.mark_done("Rapper", ["hip hop"], albums, None, "t")
+    cache.mark_done("Other Rapper", ["hiphop"], {"A": {"mtime": 1.0, "files": ["c.mp3"]}}, None, "t")
+    cache.close()
+
+    monkeypatch.setattr(main_module, "load_config", lambda: _config(tmp_path))
+    monkeypatch.setattr("sys.argv", ["genre-tagger", "--report"])
+
+    main_module.main()
+
+    out = capsys.readouterr().out
+    assert "2 трек(ов)" in out and "hip hop" in out
+    assert "hip hop <- hiphop" in out  # подсказка для aliases.txt
+
+
+def test_report_does_not_touch_the_network_or_the_lists(tmp_path, monkeypatch):
+    from src.cache import Cache
+
+    Cache(str(tmp_path / "genres.db")).close()
+
+    def explode(*_args, **_kwargs):
+        raise AssertionError("--report must not build a Last.fm client")
+
+    monkeypatch.setattr(main_module, "load_config", lambda: _config(tmp_path))
+    monkeypatch.setattr(main_module, "LastfmClient", explode)
+    monkeypatch.setattr("sys.argv", ["genre-tagger", "--report"])
+
+    main_module.main()
+
+    assert not (tmp_path / "banlist.txt").exists()
+
+
+def test_once_migrates_legacy_json_lists_on_first_run(tmp_path, monkeypatch):
+    import json
+
+    (tmp_path / "genre_banlist.json").write_text(json.dumps(["Pop"]), encoding="utf-8")
+    (tmp_path / "genre_aliases.json").write_text(
+        json.dumps({"hip hop": ["hiphop"]}), encoding="utf-8"
+    )
+    (tmp_path / "music").mkdir()
+
+    monkeypatch.setattr(main_module, "load_config", lambda: _config(tmp_path))
+    monkeypatch.setattr(main_module, "run_once", lambda *a, **kw: None)
+    monkeypatch.setattr("sys.argv", ["genre-tagger", "--once"])
+
+    main_module.main()
+
+    from src.genrelists import load_aliases, load_banlist
+
+    assert load_banlist(str(tmp_path / "banlist.txt")) == frozenset({"pop"})
+    assert load_aliases(str(tmp_path / "aliases.txt")) == {"hiphop": "hip hop"}

@@ -251,10 +251,9 @@ def test_run_once_continues_after_unexpected_error_in_one_artist(tmp_path, cache
         db_path="unused",
         lastfm_api_key="key",
         scan_interval_seconds=1,
-        min_tag_count=1,
-        max_genres=1,
         genre_ttl_days=180,
-        genre_aliases_path="",
+        banlist_path="",
+        aliases_path="",
         skip_dirs=frozenset(),
     )
 
@@ -331,10 +330,9 @@ def test_run_once_logs_warning_for_orphaned_cache_entry(tmp_path, cache, caplog)
         db_path="unused",
         lastfm_api_key="key",
         scan_interval_seconds=1,
-        min_tag_count=1,
-        max_genres=1,
         genre_ttl_days=180,
-        genre_aliases_path="",
+        banlist_path="",
+        aliases_path="",
         skip_dirs=frozenset(),
     )
     scanner.run_once(config, cache, lastfm)

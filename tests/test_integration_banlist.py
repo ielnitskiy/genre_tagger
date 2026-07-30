@@ -1,14 +1,15 @@
-"""Сквозной сценарий: артист уже затегирован жанром, который затем попадает в
-бан-лист через --ban-genre. На следующем обычном прогоне
-(main._rewrite_on_config_change + run_once) жанр должен исчезнуть и из БД, и
-с уже проставленного ID3-тега — без единого нового обращения к Last.fm."""
+"""Сквозной сценарий: артист уже затегирован жанром, который затем дописывают в
+banlist.txt. На следующем обычном прогоне (main._rewrite_on_config_change +
+run_once) жанр должен исчезнуть и из БД, и с уже проставленного ID3-тега — без
+единого нового обращения к Last.fm."""
 
 from mutagen.easyid3 import EasyID3
 
 from src import main as main_module
 from src import scanner
 from src.cache import Cache
-from src.lastfm import LastfmClient, load_banlist, save_banlist
+from src.genrelists import fingerprint, load_banlist
+from src.lastfm import LastfmClient
 from src.tagger import write_genre
 from tests.conftest import make_mp3
 
@@ -26,10 +27,14 @@ def _make_album(music_dir, artist, album, filenames):
     return album_path
 
 
+def _hash(banned=frozenset(), aliases=None):
+    return f"{main_module.PIPELINE_VERSION}:{fingerprint(banned, aliases or {})}"
+
+
 def test_banning_genre_strips_it_from_already_tagged_library_without_network_calls(tmp_path):
     music_dir = tmp_path / "music"
     db_path = tmp_path / "genres.db"
-    banlist_path = tmp_path / "banlist.json"
+    banlist_path = tmp_path / "banlist.txt"
 
     # 1. Артист уже полностью прометён раньше: genre=["pop"], файл уже затегирован.
     album_path = _make_album(music_dir, "Some Singer", "Album", ["a.mp3"])
@@ -38,25 +43,16 @@ def test_banning_genre_strips_it_from_already_tagged_library_without_network_cal
     cache.mark_done("Some Singer", ["pop"], {}, raw_json, "2025-01-01T00:00:00Z")
     write_genre(str(album_path / "a.mp3"), ["pop"])
     assert EasyID3(str(album_path / "a.mp3"))["genre"] == ["pop"]
-    cache.set_config_hash(
-        f"1:3:{main_module._aliases_fingerprint({})}:{main_module._banlist_fingerprint(frozenset())}"
-    )
+    cache.set_config_hash(_hash())
 
-    # 2. Пользователь банит жанр через --ban-genre.
-    save_banlist(str(banlist_path), frozenset())
-    banned = set(load_banlist(str(banlist_path)))
-    banned.add("pop")
-    save_banlist(str(banlist_path), frozenset(banned))
+    # 2. Пользователь дописывает жанр в banlist.txt обычным редактором.
+    banlist_path.write_text("pop\n", encoding="utf-8")
+    banned = load_banlist(str(banlist_path))
 
     # 3. Следующий обычный прогон пересчитывает жанры всех артистов из
     #    сохранённого raw_response с новым бан-листом — без сети.
-    lastfm = NetworkForbiddenLastfm(
-        api_key="unused", min_tag_count=1, max_genres=3, banned=load_banlist(str(banlist_path))
-    )
-    combined_hash = (
-        f"1:3:{main_module._aliases_fingerprint({})}:{main_module._banlist_fingerprint(lastfm._banned)}"
-    )
-    main_module._rewrite_on_config_change(cache, lastfm, combined_hash)
+    lastfm = NetworkForbiddenLastfm(api_key="unused", banned=banned)
+    main_module._rewrite_on_config_change(cache, lastfm, _hash(banned))
 
     genres, _albums = cache.get("Some Singer")
     assert genres is None
@@ -84,17 +80,11 @@ def test_banning_one_of_several_genres_keeps_the_rest_tagged(tmp_path):
     )
     cache.mark_done("Some Band", ["rock", "pop"], {}, raw_json, "2025-01-01T00:00:00Z")
     write_genre(str(album_path / "a.mp3"), ["rock", "pop"])
-    cache.set_config_hash(
-        f"1:3:{main_module._aliases_fingerprint({})}:{main_module._banlist_fingerprint(frozenset())}"
-    )
+    cache.set_config_hash(_hash())
 
-    lastfm = NetworkForbiddenLastfm(
-        api_key="unused", min_tag_count=1, max_genres=3, banned=frozenset({"pop"})
-    )
-    combined_hash = (
-        f"1:3:{main_module._aliases_fingerprint({})}:{main_module._banlist_fingerprint(lastfm._banned)}"
-    )
-    main_module._rewrite_on_config_change(cache, lastfm, combined_hash)
+    banned = frozenset({"pop"})
+    lastfm = NetworkForbiddenLastfm(api_key="unused", banned=banned)
+    main_module._rewrite_on_config_change(cache, lastfm, _hash(banned))
 
     genres, _albums = cache.get("Some Band")
     assert genres == ["rock"]
@@ -102,5 +92,32 @@ def test_banning_one_of_several_genres_keeps_the_rest_tagged(tmp_path):
     scanner.scan_artist("Some Band", str(music_dir), cache, lastfm)
 
     assert EasyID3(str(album_path / "a.mp3"))["genre"] == ["rock"]
+
+    cache.close()
+
+
+def test_banned_genre_does_not_pull_a_fourth_tag_into_id3(tmp_path):
+    """Регрессия на главную причину упрощения конвейера: бан не должен поднимать
+    в ID3 тег из хвоста, иначе после бан-прохода жанров в библиотеке становится
+    больше, а не меньше."""
+    music_dir = tmp_path / "music"
+    album_path = _make_album(music_dir, "Some Band", "Album", ["a.mp3"])
+    cache = Cache(str(tmp_path / "genres.db"))
+    raw_json = (
+        '{"toptags": {"tag": ['
+        '{"name": "rock", "count": "100"}, {"name": "russian", "count": "90"}, '
+        '{"name": "punk", "count": "80"}, {"name": "garage rock", "count": "70"}]}}'
+    )
+    cache.mark_done("Some Band", ["rock", "russian", "punk"], {}, raw_json, "2025-01-01T00:00:00Z")
+    write_genre(str(album_path / "a.mp3"), ["rock", "russian", "punk"])
+    cache.set_config_hash(_hash())
+
+    banned = frozenset({"russian"})
+    lastfm = NetworkForbiddenLastfm(api_key="unused", banned=banned)
+    main_module._rewrite_on_config_change(cache, lastfm, _hash(banned))
+
+    genres, _albums = cache.get("Some Band")
+    assert genres == ["rock", "punk"]
+    assert "garage rock" not in genres
 
     cache.close()

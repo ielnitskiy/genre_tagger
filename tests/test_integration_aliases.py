@@ -1,15 +1,17 @@
 """Сквозной сценарий: библиотека уже полностью прометена с 'дублирующимся'
-написанием жанра, пользователь добавляет синоним через --add-alias, и на
-следующем обычном прогоне (main._rewrite_on_config_change + run_once) все
-уже затегированные файлы получают канонический жанр — без единого нового
-обращения к Last.fm."""
+написанием жанра, пользователь дописывает строку в aliases.txt, и на следующем
+обычном прогоне (main._rewrite_on_config_change + run_once) все уже
+затегированные файлы получают канонический жанр — без единого нового обращения
+к Last.fm."""
 
 from mutagen.easyid3 import EasyID3
 
 from src import main as main_module
 from src import scanner
 from src.cache import Cache
-from src.lastfm import LastfmClient, load_alias_groups, load_aliases, save_alias_groups
+from src.genrelists import fingerprint, load_aliases
+from src.lastfm import LastfmClient
+from src.tagger import write_genre
 from tests.conftest import make_mp3
 
 
@@ -28,10 +30,14 @@ def _make_album(music_dir, artist, album, filenames):
     return album_path
 
 
+def _hash(aliases=None):
+    return f"{main_module.PIPELINE_VERSION}:{fingerprint(frozenset(), aliases or {})}"
+
+
 def test_adding_alias_retags_already_scanned_library_without_network_calls(tmp_path):
     music_dir = tmp_path / "music"
     db_path = tmp_path / "genres.db"
-    aliases_path = tmp_path / "aliases.json"
+    aliases_path = tmp_path / "aliases.txt"
 
     # 1. Артист уже полностью прометён раньше: в кэше лежит genre="hiphop" и
     #    полный raw_response, файл уже затегирован старым написанием.
@@ -39,29 +45,23 @@ def test_adding_alias_retags_already_scanned_library_without_network_calls(tmp_p
     cache = Cache(str(db_path))
     raw_json = '{"toptags": {"tag": [{"name": "hiphop", "count": "50"}]}}'
     cache.mark_done("Some Rapper", ["hiphop"], {}, raw_json, "2025-01-01T00:00:00Z")
-    from src.tagger import write_genre
-
     write_genre(str(album_path / "a.mp3"), ["hiphop"])
     assert EasyID3(str(album_path / "a.mp3"))["genre"] == ["hiphop"]
     # Артист уже был обработан под конфигом без алиасов — фиксируем это в БД,
     # иначе _rewrite_on_config_change сочтёт это первым запуском и не станет
     # ничего пересчитывать (см. семантику stored_hash is None в main.py).
-    cache.set_config_hash(f"1:3:{main_module._aliases_fingerprint({})}")
+    cache.set_config_hash(_hash())
 
-    # 2. Пользователь замечает дубль и добавляет синоним через --add-alias.
-    groups = load_alias_groups(str(aliases_path))
-    groups.setdefault("hip hop", []).append("hiphop")
-    save_alias_groups(str(aliases_path), groups)
+    # 2. Пользователь замечает дубль и дописывает строку в aliases.txt.
+    aliases_path.write_text("hip hop <- hiphop\n", encoding="utf-8")
+    aliases = load_aliases(str(aliases_path))
 
     # 3. Следующий обычный прогон: main._rewrite_on_config_change пересчитывает
     #    жанры всех артистов из сохранённого raw_response с новым словарём —
     #    LastfmClient, который бросает исключение при любой сетевой попытке,
     #    доказывает, что Last.fm при этом не дёргается.
-    lastfm = NetworkForbiddenLastfm(
-        api_key="unused", min_tag_count=1, max_genres=3, aliases=load_aliases(str(aliases_path))
-    )
-    combined_hash = f"1:3:{main_module._aliases_fingerprint(lastfm._aliases)}"
-    main_module._rewrite_on_config_change(cache, lastfm, combined_hash)
+    lastfm = NetworkForbiddenLastfm(api_key="unused", aliases=aliases)
+    main_module._rewrite_on_config_change(cache, lastfm, _hash(aliases))
 
     genres, _albums = cache.get("Some Rapper")
     assert genres == ["hip hop"]

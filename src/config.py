@@ -12,31 +12,13 @@ class Config:
     db_path: str
     lastfm_api_key: str
     scan_interval_seconds: int
-    min_tag_count: int
-    max_genres: int
     genre_ttl_days: int
-    genre_aliases_path: str
-    genre_banlist_path: str = "/data/genre_banlist.json"
+    banlist_path: str
+    aliases_path: str
     skip_dirs: frozenset[str] = frozenset()
-    ban_after_top_n: bool = False
-
-    @property
-    def config_hash(self) -> str:
-        # Только параметры, влияющие на результат фильтрации тегов —
-        # смена интервала/пути не должна форсировать пересчёт жанров.
-        return f"{self.min_tag_count}:{self.max_genres}:{int(self.ban_after_top_n)}"
 
 
 DEFAULT_SKIP_DIRS = frozenset({"download-errors"})
-
-
-def _bool_env(name: str, default: str) -> bool:
-    raw = os.environ.get(name, default).strip().lower()
-    if raw in {"1", "true", "yes", "on"}:
-        return True
-    if raw in {"0", "false", "no", "off"}:
-        return False
-    raise ConfigError(f"{name} must be a boolean (1/0, true/false), got {raw!r}")
 
 
 def _int_env(name: str, default: str) -> int:
@@ -66,11 +48,8 @@ def load_config() -> Config:
         db_path=os.environ.get("DB_PATH", "/data/genres.db"),
         lastfm_api_key=api_key,
         scan_interval_seconds=_int_env("SCAN_INTERVAL_SECONDS", "86400"),
-        min_tag_count=_int_env("MIN_TAG_COUNT", "10"),
-        max_genres=_int_env("MAX_GENRES", "3"),
         genre_ttl_days=_int_env("GENRE_TTL_DAYS", "180"),
-        genre_aliases_path=os.environ.get("GENRE_ALIASES_FILE", "/data/genre_aliases.json"),
-        genre_banlist_path=os.environ.get("GENRE_BANLIST_FILE", "/data/genre_banlist.json"),
+        banlist_path=os.environ.get("BANLIST_FILE", "/data/banlist.txt"),
+        aliases_path=os.environ.get("ALIASES_FILE", "/data/aliases.txt"),
         skip_dirs=skip_dirs,
-        ban_after_top_n=_bool_env("BAN_AFTER_TOP_N", "0"),
     )
