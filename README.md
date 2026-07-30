@@ -40,8 +40,8 @@ cp .env.example .env && nano .env          # вписать LASTFM_API_KEY
 docker compose build
 docker compose run --rm genre-tagger --once --limit 50    # пробный прогон
 docker compose run --rm genre-tagger --once               # вся библиотека
-crontab -e                                                # строка ниже
-# 0 3 * * * cd /home/biobojlk/projects/media-server/genre_tagger && /usr/bin/docker compose run --rm genre-tagger --once >> /home/biobojlk/projects/media-server/genre_tagger/data/cron.log 2>&1
+crontab -e                                                # строка ниже: 03:00 раз в двое суток
+# 0 3 */2 * * cd /home/biobojlk/projects/media-server/genre_tagger && /usr/bin/docker compose run --rm genre-tagger --once >> /home/biobojlk/projects/media-server/genre_tagger/data/cron.log 2>&1
 ```
 
 **Регулярное обслуживание** — раз в несколько месяцев, когда библиотека подросла
