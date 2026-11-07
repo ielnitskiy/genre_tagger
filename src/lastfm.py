@@ -6,6 +6,7 @@ from typing import Optional
 
 import requests
 
+from src.genrelists import genre_key
 from src.tagnames import canonicalize_tag_name
 
 log = logging.getLogger(__name__)
@@ -52,10 +53,13 @@ class LastfmClient:
         api_key: str,
         aliases: Optional[dict[str, str]] = None,
         banned: Optional[frozenset[str]] = None,
+        allowed: Optional[dict[str, str]] = None,
     ):
         self._api_key = api_key
         self._aliases = aliases or {}
         self._banned = banned or frozenset()
+        # None — без разрешённого списка (так работают тесты конвейера).
+        self._allowed = allowed
         self._last_request_at = 0.0
 
     def _throttle(self) -> None:
@@ -139,18 +143,32 @@ class LastfmClient:
     def _filter_tags(self, tags: list[dict]) -> Optional[list[str]]:
         """Весь конвейер целиком, в одном месте и в одном направлении:
 
-            теги Last.fm -> выбросить служебные -> топ-3 по весу
-                         -> бан-лист -> алиасы -> 0..3 жанра
+            теги Last.fm -> выбросить служебные -> алиасы -> бан-лист
+                         -> только разрешённые жанры -> топ-3 по весу
 
-        Каждый шаг только убирает или переименовывает уже выбранное. Ничего не
-        поднимается "снизу" взамен выброшенного: сколько тегов пережило
-        фильтры, столько и уйдёт в ID3 — хоть три, хоть один, хоть ни одного.
+        Сначала отсеивается всё, что не жанр, и только потом берутся три самых
+        весомых: теги Last.fm ставят пользователи, и в топе у исполнителя бывают
+        "norway" или "seen live". Меньше трёх — нормально, если настоящих
+        жанров у исполнителя меньше.
         """
         best_count: dict[str, int] = {}
         for tag in tags:
             canonical = canonicalize_tag_name(tag.get("name", ""))
             if not canonical or canonical in TAG_BLOCKLIST or YEAR_RE.match(canonical):
                 continue
+            # Бан проверяется и до, и после алиаса: алиас не должен ни обходить
+            # бан исходного тега, ни выводить на забаненный жанр.
+            if canonical in self._banned:
+                continue
+            canonical = self._aliases.get(canonical, canonical)
+            if canonical in self._banned:
+                continue
+            if self._allowed is None:
+                name = canonical
+            else:
+                name = self._allowed.get(genre_key(canonical))
+                if name is None:
+                    continue
             try:
                 count = int(tag.get("count", 0))
             except (TypeError, ValueError):
@@ -159,20 +177,10 @@ class LastfmClient:
             # тот же тег; берём наибольший вес, а не сумму: count у Last.fm это
             # вес относительно топ-тега артиста (у топ-тега всегда 100), и
             # складывать проценты бессмысленно.
-            best_count[canonical] = max(best_count.get(canonical, 0), count)
+            best_count[name] = max(best_count.get(name, 0), count)
 
         # Сортируем явно: полагаться на порядок ответа API нельзя, а при равном
         # весе алфавит даёт детерминированный результат.
         ranked = sorted(best_count.items(), key=lambda item: (-item[1], item[0]))
-
-        genres: list[str] = []
-        for name, _count in ranked[:MAX_GENRES]:
-            if name in self._banned:
-                continue
-            name = self._aliases.get(name, name)
-            # Алиас может указывать на забаненный жанр (файлы правятся руками),
-            # а ещё два разных тега из топ-3 могут схлопнуться в один и тот же.
-            if name in self._banned or name in genres:
-                continue
-            genres.append(name)
+        genres = [name for name, _count in ranked[:MAX_GENRES]]
         return genres or None

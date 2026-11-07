@@ -62,7 +62,6 @@ def _tag_new_files(
     album_name: str,
     new_files_rel: set[str],
     genres: list[str],
-    force: bool,
     failed_files: set[str],
 ) -> None:
     album_path = os.path.join(artist_path, album_name)
@@ -70,7 +69,9 @@ def _tag_new_files(
     for rel_path in new_files_rel:
         full_path = os.path.join(album_path, rel_path)
         try:
-            tagger.write_genre(full_path, genres, force=force)
+            # Перезаписываем всегда: жанр в файле мог поставить кто угодно
+            # (старые рипы, spotDL), а в библиотеке должен быть только наш.
+            tagger.write_genre(full_path, genres, force=True)
             tagged += 1
         except (MutagenError, OSError) as exc:
             log.warning("Failed to tag %s, will retry next scan: %s", full_path, exc)
@@ -222,17 +223,15 @@ def scan_artist(
             if not new_files_rel:
                 continue
             failed_files: set[str] = set()
-            _tag_new_files(artist_path, album_name, new_files_rel, genres, force, failed_files)
+            _tag_new_files(artist_path, album_name, new_files_rel, genres, failed_files)
             if failed_files:
                 # Форсируем повторный listdir этого альбома на следующем скане,
                 # независимо от того, изменится ли её mtime на диске.
                 current_albums[album_name]["mtime"] = FORCE_RECHECK_MTIME
-    elif force:
-        # genres стал None при принудительной перезаписи — значит все жанры
-        # артиста отфильтрованы (например, попали в бан-лист). Раз тег уже мог
-        # стоять на файлах с прошлого прохода, снимаем его явно, а не просто
-        # пропускаем: иначе устаревший забаненный жанр так и останется висеть
-        # на диске (см. --ban-genre в main.py).
+    else:
+        # Жанров у исполнителя нет (Last.fm ничего не дал или всё отфильтровано).
+        # Снимаем тег и с новых файлов: в них мог остаться жанр от старого рипа
+        # или spotDL, а он хуже, чем никакого.
         for album_name, new_files_rel in new_files_by_album.items():
             if not new_files_rel:
                 continue

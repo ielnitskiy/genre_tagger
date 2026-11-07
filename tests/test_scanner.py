@@ -399,3 +399,27 @@ def test_wipe_all_genre_tags_counts_corrupted_files_as_failed_and_continues(tmp_
 
     assert (scanned, affected, failed) == (2, 1, 1)
     assert "genre" not in EasyID3(str(album / "a.mp3"))
+
+
+def test_first_pass_overwrites_a_genre_set_by_someone_else(tmp_path, cache):
+    music_dir = tmp_path / "music"
+    album = _make_album(music_dir, "Artist", "Album", ["a.mp3"])
+    tags = EasyID3()
+    tags["genre"] = ["Post-Punk | Indie Rock"]
+    tags.save(str(album / "a.mp3"))
+
+    scanner.scan_artist("Artist", str(music_dir), cache, FakeLastfm(genres=["post-punk"]))
+
+    assert EasyID3(str(album / "a.mp3"))["genre"] == ["post-punk"]
+
+
+def test_first_pass_strips_a_foreign_genre_when_artist_has_no_genres(tmp_path, cache):
+    music_dir = tmp_path / "music"
+    album = _make_album(music_dir, "Artist", "Album", ["a.mp3"])
+    tags = EasyID3()
+    tags["genre"] = ["Other"]
+    tags.save(str(album / "a.mp3"))
+
+    scanner.scan_artist("Artist", str(music_dir), cache, FakeLastfm(genres=None))
+
+    assert "genre" not in EasyID3(str(album / "a.mp3"))

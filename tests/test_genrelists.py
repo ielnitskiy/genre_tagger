@@ -144,3 +144,22 @@ def test_migration_is_a_noop_without_legacy_files(tmp_path):
     migrate_json_if_needed(banlist, aliases)
     assert load_banlist(banlist) == frozenset()
     assert load_aliases(aliases) == {}
+
+
+def test_load_allowed_includes_musicbrainz_and_extra_genres(tmp_path):
+    from src.genrelists import genre_key, load_allowed
+
+    extra = tmp_path / "genres_extra.txt"
+    extra.write_text("# свои жанры\nChillhop\n", encoding="utf-8")
+    allowed = load_allowed(str(extra))
+
+    assert allowed[genre_key("post hardcore")] == "post-hardcore"
+    assert allowed[genre_key("chillhop")] == "chillhop"
+    assert genre_key("norway") not in allowed
+    assert genre_key("russian rock") not in allowed
+
+
+def test_load_allowed_without_extra_file_still_has_musicbrainz(tmp_path):
+    from src.genrelists import load_allowed
+
+    assert len(load_allowed(str(tmp_path / "missing.txt"))) > 2000

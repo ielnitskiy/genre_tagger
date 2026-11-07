@@ -25,6 +25,16 @@ log = logging.getLogger(__name__)
 
 ALIAS_SEPARATOR = "<-"
 
+# Словарь жанров MusicBrainz лежит рядом с кодом: это данные проекта, а не
+# пользовательская настройка, и обновляются они вместе с кодом.
+MUSICBRAINZ_GENRES_FILE = Path(__file__).with_name("musicbrainz_genres.txt")
+
+
+def genre_key(name: str) -> str:
+    """Ключ сравнения с разрешённым списком: Last.fm пишет "synthpop" и
+    "poppunk", а MusicBrainz — "synth-pop" и "pop punk"."""
+    return canonicalize_tag_name(name).replace(" ", "")
+
 
 def _iter_meaningful_lines(path: str):
     with open(path, "r", encoding="utf-8") as f:
@@ -48,6 +58,28 @@ def load_banlist(path: Optional[str]) -> frozenset[str]:
     except OSError as exc:
         log.warning("Cannot read banlist %s: %s", path, exc)
         return frozenset()
+
+
+def load_allowed(extra_path: Optional[str]) -> dict[str, str]:
+    """Разрешённые жанры: ключ сравнения -> как писать жанр в ID3.
+
+    Основа — словарь MusicBrainz, где только настоящие жанры, без стран, городов
+    и пользовательских пометок Last.fm. В extra_path (genres_extra.txt) — жанры,
+    которых там нет, но которые нужны. Написание берётся из MusicBrainz
+    ("post-hardcore"), для дополнений — как в файле."""
+    allowed: dict[str, str] = {}
+    sources = [str(MUSICBRAINZ_GENRES_FILE)]
+    if extra_path and os.path.exists(extra_path):
+        sources.append(extra_path)
+    for source in sources:
+        try:
+            for _lineno, line in _iter_meaningful_lines(source):
+                name = line.strip().lower()
+                if name:
+                    allowed.setdefault(genre_key(name), name)
+        except OSError as exc:
+            log.warning("Cannot read genre list %s: %s", source, exc)
+    return allowed
 
 
 def load_aliases(path: Optional[str], banned: frozenset[str] = frozenset()) -> dict[str, str]:
@@ -146,11 +178,19 @@ def _resolve_chains(main_of: dict[str, str], path: str) -> dict[str, str]:
     return resolved
 
 
-def fingerprint(banned: frozenset[str], aliases: dict[str, str]) -> str:
-    """Отпечаток обоих списков для config_hash: правка файлов должна
+def fingerprint(
+    banned: frozenset[str],
+    aliases: dict[str, str],
+    allowed: Optional[dict[str, str]] = None,
+) -> str:
+    """Отпечаток всех списков для config_hash: правка файлов должна
     форсировать офлайн-пересчёт жанров всей библиотеки."""
     payload = json.dumps(
-        {"banned": sorted(banned), "aliases": sorted(aliases.items())},
+        {
+            "banned": sorted(banned),
+            "aliases": sorted(aliases.items()),
+            "allowed": sorted((allowed or {}).items()),
+        },
         ensure_ascii=False,
         sort_keys=True,
     )

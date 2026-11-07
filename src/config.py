@@ -15,6 +15,7 @@ class Config:
     genre_ttl_days: int
     banlist_path: str
     aliases_path: str
+    genres_extra_path: str = "/data/genres_extra.txt"
     skip_dirs: frozenset[str] = frozenset()
 
 
@@ -51,5 +52,6 @@ def load_config() -> Config:
         genre_ttl_days=_int_env("GENRE_TTL_DAYS", "180"),
         banlist_path=os.environ.get("BANLIST_FILE", "/data/banlist.txt"),
         aliases_path=os.environ.get("ALIASES_FILE", "/data/aliases.txt"),
+        genres_extra_path=os.environ.get("GENRES_EXTRA_FILE", "/data/genres_extra.txt"),
         skip_dirs=skip_dirs,
     )

@@ -13,8 +13,8 @@ def no_real_sleep(monkeypatch):
     monkeypatch.setattr("src.lastfm.time.sleep", lambda _seconds: None)
 
 
-def _client(aliases=None, banned=None):
-    return LastfmClient(api_key="testkey", aliases=aliases, banned=banned)
+def _client(aliases=None, banned=None, allowed=None):
+    return LastfmClient(api_key="testkey", aliases=aliases, banned=banned, allowed=allowed)
 
 
 def _toptags_body(tags):
@@ -76,9 +76,9 @@ def test_weak_tags_are_kept_when_the_artist_has_nothing_stronger():
 
 
 @responses.activate
-def test_banned_tag_does_not_hand_its_slot_to_the_tail():
-    """Ключевое свойство конвейера: топ-3 выбирается один раз, и забаненный тег
-    не поднимает наверх четвёртый тег из хвоста."""
+def test_banned_tag_hands_its_slot_to_the_next_genre():
+    """Отсев идёт до выбора топ-3: забаненный тег освобождает место следующему
+    настоящему жанру."""
     responses.add(
         responses.GET,
         API_URL,
@@ -94,7 +94,7 @@ def test_banned_tag_does_not_hand_its_slot_to_the_tail():
     )
     client = _client(banned=frozenset({"russian"}))
     genres, _raw = client.resolve_genres("Some Artist")
-    assert genres == ["rock", "punk"]
+    assert genres == ["rock", "punk", "garage rock"]
 
 
 @responses.activate
@@ -408,3 +408,50 @@ def test_all_genres_banned_returns_none():
     assert genres is None
 
 
+
+
+ALLOWED = {
+    "rock": "rock",
+    "punkrock": "punk rock",
+    "posthardcore": "post-hardcore",
+    "synthpop": "synth-pop",
+    "hiphop": "hip hop",
+}
+
+
+def test_tags_outside_the_allowed_list_are_dropped_before_top_three():
+    raw = _toptags_body(
+        [
+            {"name": "norway", "count": "100"},
+            {"name": "rock", "count": "90"},
+            {"name": "seen live", "count": "85"},
+            {"name": "russian", "count": "80"},
+            {"name": "punk rock", "count": "70"},
+            {"name": "dzerzhinsk", "count": "60"},
+            {"name": "post-hardcore", "count": "50"},
+            {"name": "synthpop", "count": "40"},
+        ]
+    )
+    genres = _client(allowed=ALLOWED).parse_tags(raw)
+    assert genres == ["rock", "punk rock", "post-hardcore"]
+
+
+def test_allowed_genres_match_regardless_of_spaces_and_use_the_list_spelling():
+    raw = _toptags_body(
+        [
+            {"name": "SynthPop", "count": "100"},
+            {"name": "post hardcore", "count": "90"},
+        ]
+    )
+    assert _client(allowed=ALLOWED).parse_tags(raw) == ["synth-pop", "post-hardcore"]
+
+
+def test_alias_target_is_checked_against_the_allowed_list():
+    raw = _toptags_body([{"name": "rap", "count": "100"}, {"name": "rock", "count": "50"}])
+    client = _client(aliases={"rap": "hip hop"}, allowed=ALLOWED)
+    assert client.parse_tags(raw) == ["hip hop", "rock"]
+
+
+def test_artist_with_only_non_genre_tags_gets_no_genres():
+    raw = _toptags_body([{"name": "russian", "count": "100"}, {"name": "female vocalists", "count": "50"}])
+    assert _client(allowed=ALLOWED).parse_tags(raw) is None

@@ -96,10 +96,9 @@ def test_banning_one_of_several_genres_keeps_the_rest_tagged(tmp_path):
     cache.close()
 
 
-def test_banned_genre_does_not_pull_a_fourth_tag_into_id3(tmp_path):
-    """Регрессия на главную причину упрощения конвейера: бан не должен поднимать
-    в ID3 тег из хвоста, иначе после бан-прохода жанров в библиотеке становится
-    больше, а не меньше."""
+def test_banned_genre_frees_its_slot_but_never_exceeds_three(tmp_path):
+    """Отсев идёт до выбора топ-3: место забаненного тега занимает следующий
+    жанр, но жанров у исполнителя по-прежнему не больше трёх."""
     music_dir = tmp_path / "music"
     album_path = _make_album(music_dir, "Some Band", "Album", ["a.mp3"])
     cache = Cache(str(tmp_path / "genres.db"))
@@ -117,7 +116,6 @@ def test_banned_genre_does_not_pull_a_fourth_tag_into_id3(tmp_path):
     main_module._rewrite_on_config_change(cache, lastfm, _hash(banned))
 
     genres, _albums = cache.get("Some Band")
-    assert genres == ["rock", "punk"]
-    assert "garage rock" not in genres
+    assert genres == ["rock", "punk", "garage rock"]
 
     cache.close()

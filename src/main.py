@@ -8,7 +8,7 @@ import time
 
 from .cache import Cache
 from .config import ConfigError, load_config
-from .genrelists import fingerprint, load_aliases, load_banlist, migrate_json_if_needed
+from .genrelists import fingerprint, load_aliases, load_allowed, load_banlist, migrate_json_if_needed
 from .lastfm import LastfmClient
 from .report import print_report
 from .scanner import run_once, scan_artist, wipe_all_genre_tags
@@ -19,7 +19,9 @@ SHUTDOWN_POLL_SECONDS = 1.0  # шаг, которым дробим scan_interval
 
 # Версия конвейера фильтрации. Меняется вместе с логикой _filter_tags, чтобы
 # обновление кода форсировало офлайн-пересчёт уже обработанной библиотеки.
-PIPELINE_VERSION = "2"
+# "3": только жанры из словаря MusicBrainz и genres_extra.txt, и ID3
+# переписывается у всех файлов, включая жанры, поставленные не нами.
+PIPELINE_VERSION = "3"
 
 
 def _resolve_log_level() -> int:
@@ -195,7 +197,8 @@ def main() -> None:
     migrate_json_if_needed(config.banlist_path, config.aliases_path)
     banned = load_banlist(config.banlist_path)
     aliases = load_aliases(config.aliases_path, banned)
-    lastfm = LastfmClient(config.lastfm_api_key, aliases=aliases, banned=banned)
+    allowed = load_allowed(config.genres_extra_path)
+    lastfm = LastfmClient(config.lastfm_api_key, aliases=aliases, banned=banned, allowed=allowed)
 
     if args.reset_artist:
         cache.reset(args.reset_artist)
@@ -221,7 +224,7 @@ def main() -> None:
         log.info("Finished tagging artist %r", args.tag_artist)
         return
 
-    _rewrite_on_config_change(cache, lastfm, f"{PIPELINE_VERSION}:{fingerprint(banned, aliases)}")
+    _rewrite_on_config_change(cache, lastfm, f"{PIPELINE_VERSION}:{fingerprint(banned, aliases, allowed)}")
 
     if args.once:
         run_once(config, cache, lastfm, force_scan=args.force_scan, limit=args.limit)
