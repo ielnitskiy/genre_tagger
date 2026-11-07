@@ -9,6 +9,7 @@ import time
 from .cache import Cache
 from .config import ConfigError, load_config
 from .genrelists import fingerprint, load_aliases, load_allowed, load_banlist, migrate_json_if_needed
+from .fallback import FallbackResolver, genres_from_stored
 from .lastfm import LastfmClient
 from .report import print_report
 from .scanner import run_once, scan_artist, wipe_all_genre_tags
@@ -68,8 +69,10 @@ def _rewrite_on_config_change(cache: Cache, lastfm: LastfmClient, config_hash: s
             stored_hash,
             config_hash,
         )
-        for artist, raw_json in cache.iter_with_raw_response():
-            new_genres = lastfm.parse_tags(raw_json)
+        for artist, raw_json, fallback_json in cache.iter_responses():
+            new_genres = lastfm.parse_tags(raw_json) if raw_json else None
+            if new_genres is None:
+                new_genres = genres_from_stored(fallback_json, lastfm.filter_tags)
             cache.update_genre(artist, new_genres)
             cache.set_force_rewrite(artist)
     cache.set_config_hash(config_hash)
@@ -199,6 +202,7 @@ def main() -> None:
     aliases = load_aliases(config.aliases_path, banned)
     allowed = load_allowed(config.genres_extra_path)
     lastfm = LastfmClient(config.lastfm_api_key, aliases=aliases, banned=banned, allowed=allowed)
+    fallback = FallbackResolver(config.lastfm_api_key, lambda tags: lastfm.filter_tags(tags))
 
     if args.reset_artist:
         cache.reset(args.reset_artist)
@@ -220,6 +224,7 @@ def main() -> None:
             lastfm,
             force_scan=True,
             genre_ttl_days=config.genre_ttl_days,
+            fallback=fallback,
         )
         log.info("Finished tagging artist %r", args.tag_artist)
         return
@@ -227,12 +232,12 @@ def main() -> None:
     _rewrite_on_config_change(cache, lastfm, f"{PIPELINE_VERSION}:{fingerprint(banned, aliases, allowed)}")
 
     if args.once:
-        run_once(config, cache, lastfm, force_scan=args.force_scan, limit=args.limit)
+        run_once(config, cache, lastfm, force_scan=args.force_scan, limit=args.limit, fallback=fallback)
         return
 
     stop = _install_shutdown_handler()
     while not stop["requested"]:
-        run_once(config, cache, lastfm, force_scan=args.force_scan, limit=args.limit)
+        run_once(config, cache, lastfm, force_scan=args.force_scan, limit=args.limit, fallback=fallback)
         if stop["requested"]:
             break
         _sleep_interruptibly(config.scan_interval_seconds, stop)

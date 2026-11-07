@@ -21,6 +21,14 @@ def has_genre(path: str) -> bool:
     return bool(tags.get("genre"))
 
 
+def read_genres(path: str) -> list[str]:
+    """Жанры, уже стоящие в файле. Нечитаемый файл — пустой список."""
+    try:
+        return list(EasyID3(path).get("genre", []))
+    except (ID3NoHeaderError, MutagenError, OSError):
+        return []
+
+
 def write_genre(path: str, genres: list[str], force: bool = False) -> None:
     """Пишет жанр(ы) в TCON. Если force=False и тег уже есть — не перезаписывает
     (safety-belt). force=True используется для --reset-artist и пересчёта

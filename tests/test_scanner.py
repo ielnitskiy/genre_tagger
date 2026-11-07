@@ -1,3 +1,4 @@
+import json
 import os
 import time
 
@@ -20,6 +21,21 @@ class FakeLastfm:
     def resolve_genres(self, artist):
         self.calls.append(artist)
         return self.genres, '{"fake":"raw"}'
+
+    def filter_tags(self, tags):
+        return [t["name"] for t in tags] or None
+
+
+class FakeFallback:
+    """Заглушка запасной цепочки: отдаёт заданные теги и запоминает вызовы."""
+
+    def __init__(self, tags=("lo-fi",)):
+        self.tags = [{"name": t, "count": 100} for t in tags]
+        self.calls = []
+
+    def resolve(self, artist, albums, tracks, file_genres):
+        self.calls.append((artist, albums, tracks, file_genres))
+        return {"source": "test", "tags": self.tags} if self.tags else {"source": None, "tags": []}
 
 
 def _backdate(cache, artist, days):
@@ -423,3 +439,53 @@ def test_first_pass_strips_a_foreign_genre_when_artist_has_no_genres(tmp_path, c
     scanner.scan_artist("Artist", str(music_dir), cache, FakeLastfm(genres=None))
 
     assert "genre" not in EasyID3(str(album / "a.mp3"))
+
+
+def test_fallback_is_used_when_lastfm_has_no_genres(tmp_path, cache):
+    music_dir = tmp_path / "music"
+    album = _make_album(music_dir, "Artist", "Album", ["Song.mp3"])
+    fallback = FakeFallback(tags=["lo-fi"])
+
+    scanner.scan_artist("Artist", str(music_dir), cache, FakeLastfm(genres=None), fallback=fallback)
+
+    assert EasyID3(str(album / "Song.mp3"))["genre"] == ["lo-fi"]
+    assert fallback.calls == [("Artist", ["Album"], ["Song"], [])]
+    assert json.loads(cache.get_fallback("Artist"))["source"] == "test"
+
+
+def test_fallback_is_not_asked_when_lastfm_has_genres(tmp_path, cache):
+    music_dir = tmp_path / "music"
+    _make_album(music_dir, "Artist", "Album", ["a.mp3"])
+    fallback = FakeFallback()
+
+    scanner.scan_artist("Artist", str(music_dir), cache, FakeLastfm(genres=["rock"]), fallback=fallback)
+
+    assert fallback.calls == []
+
+
+def test_fallback_sees_the_genre_already_in_files(tmp_path, cache):
+    music_dir = tmp_path / "music"
+    album = _make_album(music_dir, "Artist", "Album", ["a.mp3"])
+    tags = EasyID3()
+    tags["genre"] = ["Emo"]
+    tags.save(str(album / "a.mp3"))
+    fallback = FakeFallback(tags=[])
+
+    scanner.scan_artist("Artist", str(music_dir), cache, FakeLastfm(genres=None), fallback=fallback)
+
+    assert fallback.calls[0][3] == ["Emo"]
+    assert "genre" not in EasyID3(str(album / "a.mp3"))
+
+
+def test_artist_cached_before_the_fallback_existed_is_asked_once(tmp_path, cache):
+    music_dir = tmp_path / "music"
+    album = _make_album(music_dir, "Artist", "Album", ["a.mp3"])
+    scanner.scan_artist("Artist", str(music_dir), cache, FakeLastfm(genres=None))
+    fallback = FakeFallback(tags=["metal"])
+
+    scanner.scan_artist("Artist", str(music_dir), cache, FakeLastfm(genres=None), fallback=fallback)
+    scanner.scan_artist("Artist", str(music_dir), cache, FakeLastfm(genres=None), fallback=fallback)
+
+    assert len(fallback.calls) == 1
+    assert EasyID3(str(album / "a.mp3"))["genre"] == ["metal"]
+    assert cache.get("Artist")[0] == ["metal"]

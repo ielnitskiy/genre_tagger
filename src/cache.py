@@ -37,6 +37,11 @@ class Cache:
         self._conn = sqlite3.connect(db_path, timeout=30.0)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(SCHEMA)
+        columns = {row[1] for row in self._conn.execute("PRAGMA table_info(artist_genre)")}
+        if "fallback_response" not in columns:
+            # Ответ запасного источника (src/fallback.py), когда у Last.fm пусто.
+            # NULL — ещё не опрашивали, иначе JSON {"source": ..., "tags": [...]}.
+            self._conn.execute("ALTER TABLE artist_genre ADD COLUMN fallback_response TEXT")
         self._conn.commit()
 
     def close(self) -> None:
@@ -119,6 +124,20 @@ class Cache:
         )
         self._conn.commit()
 
+    def get_fallback(self, artist: str) -> Optional[str]:
+        cur = self._conn.execute(
+            "SELECT fallback_response FROM artist_genre WHERE artist = ?", (artist,)
+        )
+        row = cur.fetchone()
+        return row[0] if row else None
+
+    def set_fallback(self, artist: str, fallback_json: Optional[str]) -> None:
+        self._conn.execute(
+            "UPDATE artist_genre SET fallback_response = ? WHERE artist = ?",
+            (fallback_json, artist),
+        )
+        self._conn.commit()
+
     def update_albums(self, artist: str, albums: dict) -> None:
         self._conn.execute(
             "UPDATE artist_genre SET albums = ? WHERE artist = ?",
@@ -149,6 +168,14 @@ class Cache:
     def iter_with_raw_response(self) -> Iterator[tuple[str, str]]:
         cur = self._conn.execute(
             "SELECT artist, raw_response FROM artist_genre WHERE raw_response IS NOT NULL"
+        )
+        yield from cur.fetchall()
+
+    def iter_responses(self) -> Iterator[tuple[str, Optional[str], Optional[str]]]:
+        """Все сохранённые ответы: Last.fm и запасного источника."""
+        cur = self._conn.execute(
+            "SELECT artist, raw_response, fallback_response FROM artist_genre "
+            "WHERE raw_response IS NOT NULL OR fallback_response IS NOT NULL"
         )
         yield from cur.fetchall()
 

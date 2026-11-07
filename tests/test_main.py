@@ -65,6 +65,7 @@ def test_daemon_loop_stops_after_current_scan_pass_on_sigterm(tmp_path, monkeypa
 
     monkeypatch.setattr(main_module, "load_config", lambda: config)
     monkeypatch.setattr(main_module, "LastfmClient", lambda *a, **kw: object())
+    monkeypatch.setattr(main_module, "FallbackResolver", lambda *a, **kw: object())
     monkeypatch.setattr(main_module, "run_once", fake_run_once)
     monkeypatch.setattr("sys.argv", ["genre-tagger"])
 

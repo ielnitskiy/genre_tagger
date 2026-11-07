@@ -140,6 +140,10 @@ class LastfmClient:
             tags = [tags]
         return self._filter_tags(tags)
 
+    def filter_tags(self, tags: list[dict]) -> Optional[list[str]]:
+        """Тот же фильтр для тегов из запасных источников (src/fallback.py)."""
+        return self._filter_tags(tags)
+
     def _filter_tags(self, tags: list[dict]) -> Optional[list[str]]:
         """Весь конвейер целиком, в одном месте и в одном направлении:
 

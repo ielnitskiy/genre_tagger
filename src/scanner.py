@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 from datetime import datetime, timezone
@@ -9,6 +10,7 @@ from mutagen import MutagenError
 from . import tagger
 from .cache import Cache
 from .config import Config
+from .fallback import FallbackResolver
 from .lastfm import LastfmClient
 
 log = logging.getLogger(__name__)
@@ -17,6 +19,9 @@ log = logging.getLogger(__name__)
 # форсировать повторный listdir альбома на следующем скане, если в этом
 # проходе не удалось протегировать какой-то файл (см. _tag_new_files).
 FORCE_RECHECK_MTIME = -1.0
+
+# Сколько файлов исполнителя читать ради уже стоящего жанра для запасной цепочки.
+FALLBACK_FILES_TO_READ = 5
 
 
 def _list_artist_dirs(music_dir: str, skip_dirs: frozenset[str]) -> list[str]:
@@ -109,6 +114,32 @@ def _strip_genre_from_files(
     )
 
 
+def _resolve_fallback(
+    fallback: FallbackResolver,
+    lastfm: LastfmClient,
+    artist_name: str,
+    artist_path: str,
+    album_dirs: list[str],
+) -> tuple[Optional[list[str]], str]:
+    """Запасная цепочка (src/fallback.py) — когда Last.fm ничего не дал.
+    Возвращает жанры и JSON для кэша."""
+    tracks: list[str] = []
+    file_genres: list[str] = []
+    files_read = 0
+    for album_name in album_dirs:
+        album_path = os.path.join(artist_path, album_name)
+        for rel_path in sorted(_list_mp3_files(album_path)):
+            if len(tracks) < 2:
+                tracks.append(os.path.splitext(os.path.basename(rel_path))[0])
+            if files_read < FALLBACK_FILES_TO_READ:
+                files_read += 1
+                for genre in tagger.read_genres(os.path.join(album_path, rel_path)):
+                    if genre not in file_genres:
+                        file_genres.append(genre)
+    result = fallback.resolve(artist_name, album_dirs, tracks, file_genres)
+    return lastfm.filter_tags(result["tags"]), json.dumps(result, ensure_ascii=False)
+
+
 def scan_artist(
     artist_name: str,
     music_dir: str,
@@ -116,6 +147,7 @@ def scan_artist(
     lastfm: LastfmClient,
     force_scan: bool = False,
     genre_ttl_days: Optional[int] = None,
+    fallback: Optional[FallbackResolver] = None,
 ) -> None:
     artist_path = os.path.join(music_dir, artist_name)
     album_dirs = _list_album_dirs(artist_path)
@@ -147,10 +179,23 @@ def scan_artist(
             genre_ttl_days,
         )
         new_genres, raw_json = lastfm.resolve_genres(artist_name)
+        fallback_json = None
+        if new_genres is None and fallback is not None:
+            new_genres, fallback_json = _resolve_fallback(
+                fallback, lastfm, artist_name, artist_path, album_dirs
+            )
         if new_genres != genres:
             log.info("Genres for %r changed: %s -> %s", artist_name, genres, new_genres)
             force = True
         genres = new_genres
+
+    elif was_done and genres is None and fallback is not None and cache.get_fallback(artist_name) is None:
+        # Исполнитель обработан до появления запасной цепочки: опрашиваем её
+        # один раз и переписываем все его файлы.
+        genres, fallback_json = _resolve_fallback(fallback, lastfm, artist_name, artist_path, album_dirs)
+        cache.update_genre(artist_name, genres)
+        cache.set_fallback(artist_name, fallback_json)
+        force = True
 
     current_albums: dict[str, dict] = {}
     new_files_by_album: dict[str, set[str]] = {}
@@ -192,6 +237,7 @@ def scan_artist(
             # (см. ветку раннего continue выше) — можно сохранять как есть.
             timestamp = datetime.now(timezone.utc).isoformat()
             cache.mark_done(artist_name, genres, current_albums, raw_json, timestamp)
+            cache.set_fallback(artist_name, fallback_json)
         elif not changed:
             return
     else:
@@ -212,11 +258,15 @@ def scan_artist(
             return
         log.info("New artist %r, resolving genres via Last.fm", artist_name)
         genres, raw_json = lastfm.resolve_genres(artist_name)
+        fallback_json = None
+        if genres is None and fallback is not None:
+            genres, fallback_json = _resolve_fallback(fallback, lastfm, artist_name, artist_path, album_dirs)
         new_files_by_album = {
             album_name: set(data["files"]) for album_name, data in current_albums.items()
         }
         timestamp = datetime.now(timezone.utc).isoformat()
         cache.mark_done(artist_name, genres, current_albums, raw_json, timestamp)
+        cache.set_fallback(artist_name, fallback_json)
 
     if genres is not None:
         for album_name, new_files_rel in new_files_by_album.items():
@@ -257,6 +307,7 @@ def run_once(
     lastfm: LastfmClient,
     force_scan: bool = False,
     limit: Optional[int] = None,
+    fallback: Optional[FallbackResolver] = None,
 ) -> None:
     artist_names = _list_artist_dirs(config.music_dir, config.skip_dirs)
     # limit режет только то, что реально обрабатываем в этом проходе;
@@ -277,6 +328,7 @@ def run_once(
                 lastfm,
                 force_scan=force_scan,
                 genre_ttl_days=config.genre_ttl_days,
+                fallback=fallback,
             )
         except Exception:
             log.exception("Unexpected error while scanning artist %r, continuing", artist_name)
