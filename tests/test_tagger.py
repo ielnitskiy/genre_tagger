@@ -113,3 +113,28 @@ def test_remove_genre_raises_on_corrupted_id3(tmp_path):
     make_corrupt_id3(path)
     with pytest.raises(MutagenError):
         tagger.remove_genre(str(path))
+
+
+def test_flac_genre_is_written_read_and_removed(tmp_path):
+    from mutagen.flac import FLAC
+
+    from tests.conftest import make_flac
+
+    path = str(tmp_path / "a.flac")
+    make_flac(path)
+    assert tagger.has_genre(path) is False
+
+    tagger.write_genre(path, ["punk", "ska"], force=True)
+    assert FLAC(path)["genre"] == ["punk", "ska"]
+    assert tagger.read_genres(path) == ["punk", "ska"]
+
+    assert tagger.remove_genre(path) is True
+    assert "genre" not in FLAC(path)
+
+
+def test_audio_files_are_recognised_by_extension():
+    assert tagger.is_audio_file("Song.MP3")
+    assert tagger.is_audio_file("Song.flac")
+    assert tagger.is_audio_file("Song.m4a")
+    assert not tagger.is_audio_file("Song.yml")
+    assert not tagger.is_audio_file("cover.jpg")

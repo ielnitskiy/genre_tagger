@@ -489,3 +489,18 @@ def test_artist_cached_before_the_fallback_existed_is_asked_once(tmp_path, cache
     assert len(fallback.calls) == 1
     assert EasyID3(str(album / "a.mp3"))["genre"] == ["metal"]
     assert cache.get("Artist")[0] == ["metal"]
+
+
+def test_flac_files_get_the_artist_genre_too(tmp_path, cache):
+    from mutagen.flac import FLAC
+
+    from tests.conftest import make_flac
+
+    music_dir = tmp_path / "music"
+    album = _make_album(music_dir, "Artist", "Album", ["a.mp3"])
+    make_flac(album / "b.flac")
+
+    scanner.scan_artist("Artist", str(music_dir), cache, FakeLastfm(genres=["rock"]))
+
+    assert EasyID3(str(album / "a.mp3"))["genre"] == ["rock"]
+    assert FLAC(str(album / "b.flac"))["genre"] == ["rock"]

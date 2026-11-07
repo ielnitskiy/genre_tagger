@@ -52,11 +52,11 @@ def _list_album_dirs(artist_path: str) -> list[str]:
     )
 
 
-def _list_mp3_files(album_path: str) -> set[str]:
+def _list_audio_files(album_path: str) -> set[str]:
     files = set()
     for root, _dirs, filenames in os.walk(album_path):
         for filename in filenames:
-            if filename.lower().endswith(".mp3"):
+            if tagger.is_audio_file(filename):
                 full = os.path.join(root, filename)
                 files.add(os.path.relpath(full, album_path))
     return files
@@ -128,7 +128,7 @@ def _resolve_fallback(
     files_read = 0
     for album_name in album_dirs:
         album_path = os.path.join(artist_path, album_name)
-        for rel_path in sorted(_list_mp3_files(album_path)):
+        for rel_path in sorted(_list_audio_files(album_path)):
             if len(tracks) < 2:
                 tracks.append(os.path.splitext(os.path.basename(rel_path))[0])
             if files_read < FALLBACK_FILES_TO_READ:
@@ -221,7 +221,7 @@ def scan_artist(
         # альбома на этом проходе (страховка от вопроса 5: ненадёжный mtime
         # на сетевой ФС мог скрыть от gate реальные изменения).
         changed = True
-        files_in_album = _list_mp3_files(album_path)
+        files_in_album = _list_audio_files(album_path)
         current_albums[album_name] = {"mtime": mtime, "files": sorted(files_in_album)}
         if was_done:
             if force:
@@ -354,7 +354,7 @@ def wipe_all_genre_tags(music_dir: str, dry_run: bool = False) -> tuple[int, int
     scanned = affected = failed = 0
     for root, _dirs, filenames in os.walk(music_dir):
         for filename in filenames:
-            if not filename.lower().endswith(".mp3"):
+            if not tagger.is_audio_file(filename):
                 continue
             full_path = os.path.join(root, filename)
             scanned += 1
